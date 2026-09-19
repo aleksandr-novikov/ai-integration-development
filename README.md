@@ -8,11 +8,24 @@ app_port: 5001
 pinned: false
 ---
 
-# db-monitoring — система мониторинга данных в БД (Flask)
+# Интеграция искусственного интеллекта в разработку
+
+Итоговый учебный проект на базе **DB Monitoring** — мониторинг качества данных, ML-детекция аномалий и сопровождение модели от эксперимента до эксплуатации.
+
+**[Доска задач](https://github.com/users/aleksandr-novikov/projects/2/views/2) · [План курса](docs/course/ROADMAP.md) · [Задачи](https://github.com/aleksandr-novikov/ai-integration-development/issues) · [Журнал ИИ-ассистентов](docs/course/AI_ASSISTANCE.md)**
+
+Команда: Александр ([aleksandr-novikov](https://github.com/aleksandr-novikov)), Раиль ([rail-ss](https://github.com/rail-ss)), Виталий ([vtm9](https://github.com/vtm9)), Оксана ([ksdergach](https://github.com/ksdergach)). Предлагаемые роли и порядок работы — в [плане](docs/course/ROADMAP.md).
+
+Основа: [исходный DB Monitoring](https://github.com/aleksandr-novikov/db-monitoring), коммит `1a869e4` от 11 июня 2026. Это отдельная копия с сохранением истории основной ветки: GitHub не позволяет форк собственного репозитория в тот же аккаунт. Возможности продукта ниже унаследованы; выполнение заданий курса отслеживается отдельно. Ссылки на прежние issues/PR и материалы спринтов относятся к исходному проекту.
+
+По доступным лекциям В01–В08 запланированы архитектура, контракт, версии, **5 экспериментов в MLflow**, валидация и тестирование. Модуль **«Деплой, API и мониторинг»** выделен в задачи #12–#16; детали ещё не опубликованных лекций отмечены `needs-lecture`.
+
+## DB Monitoring
+
 
 Веб-приложение на Flask, которое подключается к базе данных, автоматически собирает метрики качества данных (количество записей, пропуски, распределения колонок), визуализирует их на дашбордах и детектирует аномалии. Включает прогноз роста таблиц через Prophet, drift-detection (PSI/KS), change-point detection (PELT/RBF) и schema-drift detection (ALTER TABLE / новые колонки / смена типов).
 
-[![tests](https://github.com/aleksandr-novikov/db-monitoring/actions/workflows/tests.yml/badge.svg)](https://github.com/aleksandr-novikov/db-monitoring/actions/workflows/tests.yml)
+[![tests](https://github.com/aleksandr-novikov/ai-integration-development/actions/workflows/tests.yml/badge.svg)](https://github.com/aleksandr-novikov/ai-integration-development/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20|%203.12%20|%203.13-blue)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/flask-3.1-green)](https://flask.palletsprojects.com/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
@@ -55,8 +68,8 @@ pinned: false
 
 ```bash
 # 1. Клонировать репозиторий
-git clone https://github.com/aleksandr-novikov/db-monitoring.git
-cd db-monitoring
+git clone https://github.com/aleksandr-novikov/ai-integration-development.git
+cd ai-integration-development
 
 # 2. Создать виртуальное окружение
 python3 -m venv venv
