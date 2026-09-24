@@ -1,0 +1,60 @@
+{
+  "generator_version": "1.0.0",
+  "python_version": "3.12.14",
+  "generator_sources": {
+    "scripts/generate_ml_dataset.py": "94b7d0c3f63e6154e68d733f8cb124946197bea44e059b45f3484e24ac11f8eb",
+    "scripts/synthetic_metrics.py": "e94b32d8cd9ee250eb77ca5ac69a27a7da6cd10ef6c8e2757419230e5448d3da"
+  },
+  "config": {
+    "seed": 42,
+    "start": "2026-01-01T00:00:00+00:00",
+    "train_ticks": 1344,
+    "validation_ticks": 672,
+    "test_ticks": 672,
+    "interval_minutes": 15,
+    "project_id": "course-benchmark"
+  },
+  "tables": {
+    "users": 5000,
+    "orders": 10000,
+    "events": 80000
+  },
+  "features": [
+    "row_count",
+    "null_rate",
+    "d_row_count",
+    "d_null_rate"
+  ],
+  "null_rate_aggregation": "synthetic table-level mean column null rate",
+  "labels": "known injected intervals, inclusive of one recovery tick",
+  "delta_policy": "previous observed tick in the same project/table, including split boundaries; first tick omitted",
+  "selection_protocol": "fit on train; select hyperparameters and threshold on validation; evaluate selected model once on test",
+  "files": {
+    "train.csv": {
+      "sha256": "27455c4eef1d05ca41a7fd8a200d8688487cde500c6686c218b10d36e99a7068",
+      "rows": 4029,
+      "first_ts": "2026-01-01T00:15:00+00:00",
+      "last_ts": "2026-01-14T23:45:00+00:00",
+      "anomalous_rows": 0
+    },
+    "validation.csv": {
+      "sha256": "2c7667fc4e07816d871dec4d224f578a0b026e9cafbc7d5a87ee0033d7a4279e",
+      "rows": 2016,
+      "first_ts": "2026-01-15T00:00:00+00:00",
+      "last_ts": "2026-01-21T23:45:00+00:00",
+      "anomalous_rows": 207
+    },
+    "test.csv": {
+      "sha256": "d1742387e636a2e2b52ac24bda9f683e37df7d9bb8feafa094b636b6dc41009e",
+      "rows": 2016,
+      "first_ts": "2026-01-22T00:00:00+00:00",
+      "last_ts": "2026-01-28T23:45:00+00:00",
+      "anomalous_rows": 207
+    },
+    "incidents.json": {
+      "sha256": "6abbc3206a5cbfc20b7bb0e0164571a092be28cba710f50a2e9ee9564d14dea2",
+      "events": 18
+    }
+  },
+  "dataset_id": "d217ec5fdcd8799f0ad34c238b71478ab8ee4d40c68a760a72fb7c68c0d429ac"
+}
