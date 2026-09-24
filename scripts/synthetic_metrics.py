@@ -217,5 +217,3 @@ def _null_rate_at(
     if current_rate <= REGRESSION_THRESHOLD:
         return current_rate
     return BASELINE_NULL_RATE if progress < regression_progress_start else current_rate
-
-
