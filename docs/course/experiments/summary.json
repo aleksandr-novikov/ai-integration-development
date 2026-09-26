@@ -1,0 +1,192 @@
+{
+  "dataset_id": "d217ec5fdcd8799f0ad34c238b71478ab8ee4d40c68a760a72fb7c68c0d429ac",
+  "provenance": {
+    "git_sha": "f94947c6c36e4f93be46dce5c861d434b672a894",
+    "git_dirty": false,
+    "source_sha256": {
+      "ml/course_experiments.py": "5899a2590175021fc6b7c146dba0ae86f2ae29c284fb68baab1832080c05f8da",
+      "scripts/run_ml_experiments.py": "b0c189e5c23dbca732235c5e34a5e33472906d7de0fa8deca974ccaf19f530b5",
+      "scripts/import_ml_experiments.py": "9a306e7d51780b56260a867e823d0c6b7507d1c6fff332499906a52ba1942e80",
+      "scripts/generate_ml_dataset.py": "94b7d0c3f63e6154e68d733f8cb124946197bea44e059b45f3484e24ac11f8eb",
+      "scripts/synthetic_metrics.py": "e94b32d8cd9ee250eb77ca5ac69a27a7da6cd10ef6c8e2757419230e5448d3da",
+      "scripts/validate_ml_dataset.py": "b9c80cfca7327c0c76cade6b412294301177e9cae24785c867975218def62af5",
+      "docs/course/experiments/PROTOCOL.md": "0f994f45afc6e0c78da5b58e1b6d072d0109747c39cbfac081b12715c1893ba9"
+    },
+    "python": "3.12.14",
+    "packages": {
+      "mlflow": "3.16.1",
+      "scikit-learn": "1.6.1",
+      "numpy": "2.5.3",
+      "scipy": "1.18.1",
+      "pandas": "2.2.3",
+      "matplotlib": "3.10.8",
+      "skops": "0.16.0",
+      "joblib": "1.6.0",
+      "threadpoolctl": "3.7.0"
+    }
+  },
+  "seed": 42,
+  "validation": [
+    {
+      "name": "baseline",
+      "run_id": "269a806ac22140419c89186ee059eddb",
+      "parameters": {
+        "contamination": 0.01,
+        "n_estimators": 100,
+        "max_samples": 256
+      },
+      "metrics": {
+        "point_precision": 0.3522267206477733,
+        "point_recall": 0.42028985507246375,
+        "point_f1": 0.3832599118942731,
+        "false_positive_rate": 0.08844665561083472,
+        "true_positives": 87,
+        "false_positives": 160,
+        "false_negatives": 120,
+        "true_negatives": 1649,
+        "event_recall": 1.0,
+        "events_total": 9,
+        "events_detected": 9,
+        "median_delay_ticks": 0.0,
+        "abrupt_median_delay_ticks": 0.0
+      },
+      "targets_met": true
+    },
+    {
+      "name": "contamination_005",
+      "run_id": "de47c791976c44e19f378867d8be6479",
+      "parameters": {
+        "contamination": 0.005,
+        "n_estimators": 100,
+        "max_samples": 256
+      },
+      "metrics": {
+        "point_precision": 0.38,
+        "point_recall": 0.2753623188405797,
+        "point_f1": 0.319327731092437,
+        "false_positive_rate": 0.05140961857379768,
+        "true_positives": 57,
+        "false_positives": 93,
+        "false_negatives": 150,
+        "true_negatives": 1716,
+        "event_recall": 1.0,
+        "events_total": 9,
+        "events_detected": 9,
+        "median_delay_ticks": 0.0,
+        "abrupt_median_delay_ticks": 0.5
+      },
+      "targets_met": true
+    },
+    {
+      "name": "contamination_050",
+      "run_id": "8db34b27b6ce425c87414395b90f845f",
+      "parameters": {
+        "contamination": 0.05,
+        "n_estimators": 100,
+        "max_samples": 256
+      },
+      "metrics": {
+        "point_precision": 0.27732463295269166,
+        "point_recall": 0.821256038647343,
+        "point_f1": 0.4146341463414634,
+        "false_positive_rate": 0.2448866777224986,
+        "true_positives": 170,
+        "false_positives": 443,
+        "false_negatives": 37,
+        "true_negatives": 1366,
+        "event_recall": 1.0,
+        "events_total": 9,
+        "events_detected": 9,
+        "median_delay_ticks": 0.0,
+        "abrupt_median_delay_ticks": 0.0
+      },
+      "targets_met": false
+    },
+    {
+      "name": "trees_300",
+      "run_id": "3df0d7f2114a4197ae9bec286e41a091",
+      "parameters": {
+        "contamination": 0.01,
+        "n_estimators": 300,
+        "max_samples": 256
+      },
+      "metrics": {
+        "point_precision": 0.35526315789473684,
+        "point_recall": 0.391304347826087,
+        "point_f1": 0.37241379310344824,
+        "false_positive_rate": 0.0812603648424544,
+        "true_positives": 81,
+        "false_positives": 147,
+        "false_negatives": 126,
+        "true_negatives": 1662,
+        "event_recall": 1.0,
+        "events_total": 9,
+        "events_detected": 9,
+        "median_delay_ticks": 0.0,
+        "abrupt_median_delay_ticks": 0.0
+      },
+      "targets_met": true
+    },
+    {
+      "name": "samples_128",
+      "run_id": "8aad775256884739a0dcd4105cde9fdc",
+      "parameters": {
+        "contamination": 0.01,
+        "n_estimators": 100,
+        "max_samples": 128
+      },
+      "metrics": {
+        "point_precision": 0.32786885245901637,
+        "point_recall": 0.3864734299516908,
+        "point_f1": 0.3547671840354767,
+        "false_positive_rate": 0.09065782200110559,
+        "true_positives": 80,
+        "false_positives": 164,
+        "false_negatives": 127,
+        "true_negatives": 1645,
+        "event_recall": 1.0,
+        "events_total": 9,
+        "events_detected": 9,
+        "median_delay_ticks": 0.0,
+        "abrupt_median_delay_ticks": 0.5
+      },
+      "targets_met": true
+    }
+  ],
+  "selection": {
+    "name": "baseline",
+    "validation_run_id": "269a806ac22140419c89186ee059eddb",
+    "validation_targets_met": true,
+    "selected_using": "validation_only",
+    "parameters": {
+      "contamination": 0.01,
+      "n_estimators": 100,
+      "max_samples": 256
+    }
+  },
+  "test": {
+    "name": "baseline",
+    "run_id": "36db7cd846c94d05897732aa3eec448d",
+    "parameters": {
+      "contamination": 0.01,
+      "n_estimators": 100,
+      "max_samples": 256
+    },
+    "metrics": {
+      "point_precision": 0.27710843373493976,
+      "point_recall": 0.4444444444444444,
+      "point_f1": 0.34137291280148424,
+      "false_positive_rate": 0.13266998341625208,
+      "true_positives": 92,
+      "false_positives": 240,
+      "false_negatives": 115,
+      "true_negatives": 1569,
+      "event_recall": 1.0,
+      "events_total": 9,
+      "events_detected": 9,
+      "median_delay_ticks": 0.0,
+      "abrupt_median_delay_ticks": 0.0
+    },
+    "targets_met": false
+  }
+}
