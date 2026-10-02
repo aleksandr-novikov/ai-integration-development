@@ -1,0 +1,128 @@
+{
+  "report_version": 1,
+  "dataset_id": "d217ec5fdcd8799f0ad34c238b71478ab8ee4d40c68a760a72fb7c68c0d429ac",
+  "valid": true,
+  "failed_checks": 0,
+  "checks": [
+    {
+      "check": "manifest_integrity",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "schema_train",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "schema_validation",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "schema_test",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "required_identifiers",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "numeric_types",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "finite_features",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "null_rate_range",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "row_count_domain",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "utc_timestamps",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "unique_observation_key",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "observation_order",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "split_separation",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "feature_time_grid",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "delta_alignment_row_count",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "delta_alignment_null_rate",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "incident_intervals",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "incident_labels",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "label_domain",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    },
+    {
+      "check": "normal_training_set",
+      "status": "pass",
+      "error_count": 0,
+      "examples": []
+    }
+  ]
+}
