@@ -49,11 +49,9 @@ jobs:
           path: coverage.xml
           retention-days: 14
 
-  # Integration tests (#44) — spin up real Postgres / MySQL / ClickHouse via
-  # testcontainers. Slow (~3–5 min total) so we only run them on push to
-  # master, not on every PR.
+  # Integration tests (#44) — real databases and Iceberg/MinIO via
+  # testcontainers. Run before merge too, so broken images are caught in PRs.
   integration:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     needs: test
     steps:
@@ -78,8 +76,8 @@ jobs:
         run: pytest -m integration -v --tb=short
 
   # E2E dashboard tests (#45) — Playwright + headless Chromium drives the
-  # live Flask app. Master-only (skipped on PRs) for the same reason as the
-  # integration job: download + browser-driven flow is slow on every PR.
+  # live Flask app. Master-only: download + browser-driven flow is slow
+  # on every PR.
   e2e:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest

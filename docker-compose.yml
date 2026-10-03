@@ -77,7 +77,8 @@ services:
   #
   # MinIO — S3-совместимое хранилище для файлов Iceberg-таблиц.
   minio:
-    image: minio/minio:latest
+    # Same pinned Thanos mirror as tests/integration/test_db_iceberg.py.
+    image: quay.io/thanos/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: db-monitoring-minio
     profiles: ["iceberg"]
     environment:

@@ -326,7 +326,7 @@ make test-integration              # = pytest -m integration -v
 # или: pytest -m integration tests/integration/test_db_postgres.py -v
 ```
 
-В CI отдельный job `integration` запускается **только** на push в `master` (на PR не запускается — медленно, ~3–5 мин).
+В CI отдельный job `integration` запускается на каждом PR и на push в `master`, после unit-тестов. Он также проверяет Iceberg с реальными MinIO и REST-каталогом: недоступный образ или несовместимость стенда теперь видны до слияния. Сам по себе запуск job не запрещает merge: для этого `integration` нужно сделать обязательной проверкой в защите ветки.
 
 ### E2E дашборда (Playwright)
 
@@ -446,6 +446,8 @@ NULL-статистика во всех SQL-диалектах считаетс�
 ### Live smoke test для Iceberg
 
 Поднимает локальный REST-каталог + MinIO через Docker Compose и прогоняет адаптер против реального Iceberg-кластера:
+
+Для MinIO используется [зеркало проекта Thanos](https://quay.io/repository/thanos/minio?tab=tags), релиз `RELEASE.2025-09-07T16-13-09Z`: прежние образы `minio/minio` и `quay.io/minio/minio` недоступны при проверке 03.10.2026. В Compose и интеграционных тестах закреплён один multi-platform digest `sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e` (включает Linux amd64 и arm64). Это стенд для тестов и учебной демонстрации. При обновлении меняйте обе ссылки на образ и запускайте `make test-integration`.
 
 ```bash
 make iceberg-up       # запустить MinIO (9000/9001) + Iceberg REST (8181)
