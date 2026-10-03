@@ -1,0 +1,51 @@
+{
+  "code_git_sha": "443f2adf44326cb3014fd0f5351b837e20b4d676",
+  "python": "3.12.14",
+  "packages": {
+    "pytest": "8.3.4",
+    "scikit-learn": "1.6.1",
+    "numpy": "2.5.3",
+    "pandas": "2.2.3",
+    "joblib": "1.5.3"
+  },
+  "commands": [
+    {
+      "command": [
+        "venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/test_model_quality.py",
+        "tests/test_quality_report.py",
+        "tests/test_anomaly_detector.py",
+        "tests/test_anomaly_alert_quality.py",
+        "-q",
+        "--junitxml=artifacts/course-experiments/quality-check/pytest.xml"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "venv/bin/python",
+        "-m",
+        "scripts.check_model_quality",
+        "--report",
+        "artifacts/course-experiments/quality-check/report.json"
+      ],
+      "exit_code": 1
+    },
+    {
+      "command": [
+        "venv/bin/ruff",
+        "check",
+        "."
+      ],
+      "exit_code": 0
+    }
+  ],
+  "quality_gate_passed": false,
+  "source_sha256": {
+    "scripts/check_model_quality.py": "e3efa3791e3c6d4394ecca35fe500efe013b4f24848c0fc9ef79a491050fe615",
+    "tests/test_model_quality.py": "b4130f87e55a035ffc323b02068d46a541721d4ba9cbadb30d6b93de51ec0003",
+    "tests/test_quality_report.py": "45cfe4d8c84998ccf850ce06afda79654a7b7afce62ae80a260bef9cb9285539"
+  }
+}
