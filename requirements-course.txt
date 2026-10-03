@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Reproducible course experiments and offline MLflow UI/export (#9).
+mlflow==3.16.1
+matplotlib==3.10.8
+skops==0.16.0

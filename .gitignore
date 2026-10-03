@@ -18,3 +18,4 @@ tests/e2e/_artifacts/
 .env.local
 docker-compose.override.yml
 data/course/
+artifacts/course-experiments/

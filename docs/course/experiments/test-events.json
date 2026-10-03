@@ -1,0 +1,56 @@
+[
+  {
+    "incident_id": "course-benchmark:users:test:null_spike",
+    "kind": "null_spike",
+    "detected": true,
+    "delay_ticks": 0.0
+  },
+  {
+    "incident_id": "course-benchmark:users:test:volume_jump",
+    "kind": "volume_jump",
+    "detected": true,
+    "delay_ticks": 5.0
+  },
+  {
+    "incident_id": "course-benchmark:users:test:regime_change",
+    "kind": "regime_change",
+    "detected": true,
+    "delay_ticks": 0.0
+  },
+  {
+    "incident_id": "course-benchmark:orders:test:null_spike",
+    "kind": "null_spike",
+    "detected": true,
+    "delay_ticks": 0.0
+  },
+  {
+    "incident_id": "course-benchmark:orders:test:volume_jump",
+    "kind": "volume_jump",
+    "detected": true,
+    "delay_ticks": 2.0
+  },
+  {
+    "incident_id": "course-benchmark:orders:test:regime_change",
+    "kind": "regime_change",
+    "detected": true,
+    "delay_ticks": 0.0
+  },
+  {
+    "incident_id": "course-benchmark:events:test:null_spike",
+    "kind": "null_spike",
+    "detected": true,
+    "delay_ticks": 0.0
+  },
+  {
+    "incident_id": "course-benchmark:events:test:volume_jump",
+    "kind": "volume_jump",
+    "detected": true,
+    "delay_ticks": 0.0
+  },
+  {
+    "incident_id": "course-benchmark:events:test:regime_change",
+    "kind": "regime_change",
+    "detected": true,
+    "delay_ticks": 0.0
+  }
+]
