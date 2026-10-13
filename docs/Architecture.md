@@ -7,34 +7,23 @@
 Специалист по качеству данных получает сигнал об аномалии агрегированных метрик и проверяет его вручную. Система не исправляет исходные данные. Это **модульный монолит**: Flask, сборщики, планировщик и ML работают в одном приложении; отдельные контейнеры БД не превращают его в набор микросервисов.
 
 ```mermaid
-flowchart LR
-    DB["Источники: PostgreSQL / MySQL / ClickHouse / Iceberg"]
-    subgraph APP["Одно Python-приложение"]
-        SCH["APScheduler: фоновые задания"]
-        COL["Collectors + DB adapters"]
-        TRAIN["Обучение IF / прогноза"]
-        SCORE["Инференс и анализ дрейфа"]
-        API["Flask API + Jinja2 / Plotly"]
-        ALERT["Фильтры и отправка уведомлений"]
-        SCH --> COL
-        SCH --> TRAIN
-        COL --> SCORE
-        SCORE --> ALERT
-        API -->|"прогноз синхронно"| SCORE
-        SCORE -.->|"модель отсутствует или устарела"| TRAIN
-    end
-    DB -->|"чтение через адаптеры"| COL
-    COL -->|"метрики, схема, журнал сборов"| STORE[("Хранилище метрик: TimescaleDB / PostgreSQL / SQLite")]
+flowchart TB
+    DB["Источники данных<br/>SQL / Iceberg"] -->|"чтение"| COL["Сборщики<br/>и адаптеры БД"]
+    SCH["APScheduler<br/>фоновые задания"] --> COL
+    COL -->|"метрики и схема"| STORE[("Хранилище метрик<br/>TimescaleDB / PostgreSQL<br/>или SQLite")]
+    SCH --> TRAIN["Обучение<br/>IF / прогноза"]
     STORE --> TRAIN
-    STORE --> SCORE
-    TRAIN --> MODEL[("models/*.joblib")]
+    TRAIN --> MODEL[("Модель и scaler<br/>models/*.joblib")]
+    STORE --> SCORE["Инференс<br/>и анализ дрейфа"]
     MODEL --> SCORE
-    SCORE -->|"scores и отчёты"| STORE
-    STORE --> API
-    API --> UI["Браузер / HTTP-клиент"]
-    ALERT --> TG["Telegram, если настроен"]
-    API -->|"POST /api/explain"| LLM["NVIDIA NIM либо шаблонный ответ"]
+    SCORE --> OUT["Scores / отчёты<br/>в хранилище"]
+    OUT --> API["Flask API / дашборд<br/>синхронные запросы"]
+    SCORE --> ALERT["Фильтры / throttle<br/>Telegram при настройке"]
+    API -->|"объяснение"| LLM["NIM либо<br/>шаблонный ответ"]
 ```
+
+Схема показывает основной путь сохранённых результатов. Прогноз вызывается из API синхронно; возможное обучение внутри инференса описано ниже. Планировщик, сборщики, ML и Flask находятся в одном процессе приложения.
+
 
 **Сбор и хранение.** `MetricsCollector` читает число строк, размер, NULL-статистику и распределения; `SchemaCollector` фиксирует схему. `collect_for_connection` выбирает адаптер и настройки подключения, записывает данные с `project_id`. Это периодический **micro-batch**, а не непрерывный поток событий: интервал подключения 5–1440 минут, legacy-сбор по умолчанию раз в 15 минут. Полный сбор SQL-статистик может сканировать таблицу; ограничения нагрузки и режимы `sample`/`approx` зависят от адаптера. Iceberg использует метаданные snapshot/manifest.
 
