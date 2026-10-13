@@ -35,6 +35,8 @@ pinned: false
 
 Описание кейса, критерии успеха и границы «унаследовано / выполнено в рамках курса»: [docs/course/CASE.md](docs/course/CASE.md)
 
+[Актуальная архитектура: компоненты, потоки и ограничения](docs/Architecture.md) · [Решение по Flask и учебному FastAPI-сервису](docs/adr/001-flask-and-inference-service.md) · [Сверка архитектуры с кодом](docs/course/architecture-review.md).
+
 Подготовка датасета для экспериментов: `python -m scripts.generate_ml_dataset --output data/course`.
 
 [Эксперименты MLflow: запуск, перенос результатов](docs/course/experiments/README.md) · [Таблица и выводы первой серии](docs/course/experiments/RESULTS.md): 9/9 инцидентов на test, FPR 13,27% — цель ≤10% пока не достигнута.
