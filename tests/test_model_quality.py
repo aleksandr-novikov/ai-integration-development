@@ -96,9 +96,26 @@ def test_unseen_incidents_detected_inside_their_intervals(score, kind):
         if kind in ("volume_jump", "regime_change"):
             window["row_count"][i]["value"] *= 1.5 if kind == "volume_jump" else 1.15
     predictions = score(window)
-    start, end = window["row_count"][first]["ts"], window["row_count"][last]["ts"]
+    # range(first, last) excludes last: recovery must not count as detection.
+    start, end = window["row_count"][first]["ts"], window["row_count"][last - 1]["ts"]
     detected = [p for p in predictions if start <= p["ts"] <= end and p["is_anomaly"]]
     assert detected, f"missed {kind} on independent observations"
+    if kind in ("null_spike", "volume_jump"):
+        delay = (datetime.fromisoformat(min(p["ts"] for p in detected))
+                 - datetime.fromisoformat(start)) / timedelta(minutes=15)
+        assert delay <= 1, f"late {kind}: {delay} ticks"
+
+
+@pytest.mark.parametrize("kind", ["null_spike", "volume_jump", "regime_change"])
+def test_recovery_only_signal_does_not_satisfy_incident_check(kind):
+    def recovery_only(window):
+        last = 180 if kind == "regime_change" else 98
+        return [{"ts": window["row_count"][last]["ts"], "is_anomaly": True}]
+
+    # Regression for the assertion itself: a detector missing the entire
+    # injected interval must fail even if it fires on the recovery tick.
+    with pytest.raises(AssertionError, match=f"missed {kind}"):
+        test_unseen_incidents_detected_inside_their_intervals(recovery_only, kind)
 
 
 def test_higher_measurement_noise_increases_false_alarms(score):

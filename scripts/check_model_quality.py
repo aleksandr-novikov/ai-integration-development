@@ -1,6 +1,6 @@
 """Audit frozen #9 predictions, without fitting a model or selecting a new threshold.
 
-Exit 0: CASE quality targets passed; exit 1: targets failed; exit 2: invalid input.
+Exit 0: CASE targets passed; exit 1: targets failed; exit 2: input or execution error.
 """
 
 import argparse
@@ -18,6 +18,9 @@ import pandas as pd
 from ml.course_experiments import evaluate
 
 TARGETS = {"event_recall": 0.8, "false_positive_rate": 0.1, "abrupt_median_delay_ticks": 1.0}
+# Trusted identity of the frozen #9 export, recorded before this audit.
+# --archive may relocate the same bytes; it cannot select another experiment.
+EXPECTED_ARCHIVE_SHA256 = "35c7f92b5ee2d9e21817b7f1b202d07c0b179b73084b84a787780a2082659c8f"
 
 
 def quality_gate(metrics):
@@ -61,7 +64,12 @@ def audit_predictions(predictions, events, manifest):
 
 
 def read_report(archive):
-    with zipfile.ZipFile(archive) as bundle:
+    archive_bytes = archive.read_bytes()
+    archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+    if archive_sha256 != EXPECTED_ARCHIVE_SHA256:
+        raise ValueError("archive SHA-256 mismatch: expected the frozen experiment #9 export")
+    # Parse precisely the bytes whose identity was verified above.
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as bundle:
 
         def read_json(name):
             return json.loads(bundle.read(name))
@@ -129,7 +137,7 @@ def read_report(archive):
         raise ValueError("event detection outcomes do not match the archived predictions")
     return {
         "report_version": 1,
-        "source_archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "source_archive_sha256": archive_sha256,
         "source_git_sha": summary["provenance"]["git_sha"],
         "dataset_id": manifest["dataset_id"],
         "run_id": run["run_id"],
@@ -150,12 +158,11 @@ def main():
         parser.error("report must not overwrite its source archive")
     try:
         report = read_report(args.archive)
+        encoded = json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(encoded, encoding="utf-8")
     except (OSError, KeyError, ValueError, TypeError, zipfile.BadZipFile) as exc:
         parser.error(str(exc))
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(
-        json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
-    )
     print(
         f"{'PASS' if report['quality_gate']['passed'] else 'FAIL'}: model quality targets; {args.report}"
     )

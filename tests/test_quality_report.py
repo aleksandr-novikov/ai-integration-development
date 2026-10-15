@@ -1,5 +1,6 @@
 """Quality policy boundaries and audit of the immutable MLflow test export."""
 
+import hashlib
 import io
 import json
 import subprocess
@@ -10,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from scripts import check_model_quality as audit
 from scripts.check_model_quality import quality_gate, read_report
 
 ARCHIVE = Path(__file__).resolve().parents[1] / "docs/course/experiments/mlflow-export.zip"
@@ -57,7 +59,7 @@ def test_frozen_baseline_is_rejected_and_slices_preserve_denominators():
 
 
 @pytest.mark.parametrize("damage", ["metric", "label", "threshold"])
-def test_audit_detects_inconsistent_archived_evidence(tmp_path, damage):
+def test_audit_detects_inconsistent_archived_evidence(tmp_path, monkeypatch, damage):
     output = tmp_path / "changed.zip"
     with zipfile.ZipFile(ARCHIVE) as original, zipfile.ZipFile(output, "w") as changed:
         # Models are deliberately not copied: the audit must never load them.
@@ -79,8 +81,72 @@ def test_audit_detects_inconsistent_archived_evidence(tmp_path, damage):
                 frame.loc[0, field] = 1 - frame.loc[0, field]
                 payload = frame.to_csv(index=False).encode()
             changed.writestr(name, payload)
+    # Exercise semantic validation behind the independent identity gate.
+    # CLI users cannot override the pinned digest; that gate is tested below.
+    monkeypatch.setattr(audit, "EXPECTED_ARCHIVE_SHA256",
+                        hashlib.sha256(output.read_bytes()).hexdigest())
     with pytest.raises(ValueError, match="mismatch|inconsistent"):
         read_report(output)
+
+
+def test_archive_pin_matches_recorded_experiment_checksum():
+    assert audit.EXPECTED_ARCHIVE_SHA256 == ARCHIVE.with_suffix(".sha256").read_text().split()[0]
+
+
+def test_relocated_identical_archive_is_accepted(tmp_path):
+    relocated = tmp_path / "export.zip"
+    relocated.write_bytes(ARCHIVE.read_bytes())
+    assert read_report(relocated)["source_archive_sha256"] == audit.EXPECTED_ARCHIVE_SHA256
+
+
+def test_internally_consistent_other_run_is_rejected(tmp_path):
+    output = tmp_path / "other-experiment.zip"
+    with zipfile.ZipFile(ARCHIVE) as original, zipfile.ZipFile(output, "w") as changed:
+        for name in original.namelist():
+            payload = original.read(name)
+            if name == "summary.json":
+                data = json.loads(payload)
+                data["test"]["run_id"] = "other-consistent-run"
+                payload = json.dumps(data).encode()
+            elif name == "final_test/run.json":
+                data = json.loads(payload)
+                data["run_id"] = "other-consistent-run"
+                payload = json.dumps(data).encode()
+            changed.writestr(name, payload)
+    with pytest.raises(ValueError, match="archive SHA-256 mismatch"):
+        read_report(output)
+
+
+@pytest.mark.parametrize("failure", ["parent_is_file", "report_is_directory"])
+def test_quality_cli_output_errors_return_technical_error(tmp_path, failure):
+    blocked = tmp_path / "blocked"
+    if failure == "parent_is_file":
+        blocked.write_text("keep this file")
+        output = blocked / "quality.json"
+    else:
+        blocked.mkdir()
+        output = blocked
+    completed = subprocess.run(
+        [sys.executable, "-m", "scripts.check_model_quality", "--archive", str(ARCHIVE),
+         "--report", str(output)], capture_output=True, text=True,
+    )
+    assert completed.returncode == 2, completed.stderr
+    assert "error:" in completed.stderr
+    assert "Traceback" not in completed.stderr
+    assert not completed.stdout
+    if failure == "parent_is_file":
+        assert blocked.read_text() == "keep this file"
+
+
+def test_quality_cli_serialization_error_returns_technical_error(tmp_path, monkeypatch, capsys):
+    output = tmp_path / "quality.json"
+    monkeypatch.setattr(sys, "argv", ["check_model_quality", "--report", str(output)])
+    monkeypatch.setattr(audit, "read_report", lambda _: {"bad": float("nan")})
+    with pytest.raises(SystemExit) as exc:
+        audit.main()
+    assert exc.value.code == 2
+    assert "error:" in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_quality_cli_writes_failure_and_returns_nonzero(tmp_path):
