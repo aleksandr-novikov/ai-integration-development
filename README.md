@@ -40,6 +40,8 @@ pinned: false
 [Эксперименты MLflow: запуск, перенос результатов](docs/course/experiments/README.md) · [Таблица и выводы первой серии](docs/course/experiments/RESULTS.md): 9/9 инцидентов на test, FPR 13,27% — цель ≤10% пока не достигнута.
 Генератор создаёт 8 061 наблюдение трёх таблиц, 18 размеченных инцидентов, временные выборки train/validation/test и манифест с контрольными суммами. База данных не нужна. [Описание данных и протокол оценки](docs/course/DATASET.md).
 
+[Проверки качества модели и ограничения](docs/course/quality/README.md) · `python -m scripts.check_model_quality --report /tmp/model-quality.json` (для текущей baseline ожидается FAIL).
+
 ## DB Monitoring
 
 
