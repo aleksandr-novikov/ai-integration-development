@@ -1,0 +1,194 @@
+{
+  "report_version": 1,
+  "source_archive_sha256": "35c7f92b5ee2d9e21817b7f1b202d07c0b179b73084b84a787780a2082659c8f",
+  "source_git_sha": "f94947c6c36e4f93be46dce5c861d434b672a894",
+  "dataset_id": "d217ec5fdcd8799f0ad34c238b71478ab8ee4d40c68a760a72fb7c68c0d429ac",
+  "run_id": "36db7cd846c94d05897732aa3eec448d",
+  "selected_candidate": "baseline",
+  "evaluation": "audit_of_frozen_test_predictions_no_refit_or_reselection",
+  "overall": {
+    "point_precision": 0.27710843373493976,
+    "point_recall": 0.4444444444444444,
+    "point_f1": 0.34137291280148424,
+    "false_positive_rate": 0.13266998341625208,
+    "true_positives": 92,
+    "false_positives": 240,
+    "false_negatives": 115,
+    "true_negatives": 1569,
+    "event_recall": 1.0,
+    "events_total": 9,
+    "events_detected": 9,
+    "median_delay_ticks": 0.0,
+    "abrupt_median_delay_ticks": 0.0
+  },
+  "by_table": {
+    "events": {
+      "point_precision": 0.27450980392156865,
+      "point_recall": 0.4057971014492754,
+      "point_f1": 0.3274853801169591,
+      "false_positive_rate": 0.12271973466003316,
+      "true_positives": 28,
+      "false_positives": 74,
+      "false_negatives": 41,
+      "true_negatives": 529,
+      "event_recall": 1.0,
+      "events_total": 3,
+      "events_detected": 3,
+      "median_delay_ticks": 0.0,
+      "abrupt_median_delay_ticks": 0.0
+    },
+    "orders": {
+      "point_precision": 0.27358490566037735,
+      "point_recall": 0.42028985507246375,
+      "point_f1": 0.33142857142857146,
+      "false_positive_rate": 0.12769485903814262,
+      "true_positives": 29,
+      "false_positives": 77,
+      "false_negatives": 40,
+      "true_negatives": 526,
+      "event_recall": 1.0,
+      "events_total": 3,
+      "events_detected": 3,
+      "median_delay_ticks": 0.0,
+      "abrupt_median_delay_ticks": 1.0
+    },
+    "users": {
+      "point_precision": 0.28225806451612906,
+      "point_recall": 0.5072463768115942,
+      "point_f1": 0.3626943005181348,
+      "false_positive_rate": 0.14759535655058043,
+      "true_positives": 35,
+      "false_positives": 89,
+      "false_negatives": 34,
+      "true_negatives": 514,
+      "event_recall": 1.0,
+      "events_total": 3,
+      "events_detected": 3,
+      "median_delay_ticks": 0.0,
+      "abrupt_median_delay_ticks": 2.5
+    }
+  },
+  "by_incident_kind": {
+    "null_spike": {
+      "point_precision": 0.06976744186046512,
+      "point_recall": 0.5,
+      "point_f1": 0.12244897959183673,
+      "false_positive_rate": 0.13266998341625208,
+      "true_positives": 18,
+      "false_positives": 240,
+      "false_negatives": 18,
+      "true_negatives": 1569,
+      "event_recall": 1.0,
+      "events_total": 3,
+      "events_detected": 3,
+      "median_delay_ticks": 0.0,
+      "abrupt_median_delay_ticks": 0.0
+    },
+    "regime_change": {
+      "point_precision": 0.2026578073089701,
+      "point_recall": 0.45185185185185184,
+      "point_f1": 0.2798165137614679,
+      "false_positive_rate": 0.13266998341625208,
+      "true_positives": 61,
+      "false_positives": 240,
+      "false_negatives": 74,
+      "true_negatives": 1569,
+      "event_recall": 1.0,
+      "events_total": 3,
+      "events_detected": 3,
+      "median_delay_ticks": 0.0,
+      "abrupt_median_delay_ticks": null
+    },
+    "volume_jump": {
+      "point_precision": 0.05138339920948617,
+      "point_recall": 0.3611111111111111,
+      "point_f1": 0.08996539792387545,
+      "false_positive_rate": 0.13266998341625208,
+      "true_positives": 13,
+      "false_positives": 240,
+      "false_negatives": 23,
+      "true_negatives": 1569,
+      "event_recall": 1.0,
+      "events_total": 3,
+      "events_detected": 3,
+      "median_delay_ticks": 2.0,
+      "abrupt_median_delay_ticks": 2.0
+    }
+  },
+  "events": [
+    {
+      "incident_id": "course-benchmark:users:test:null_spike",
+      "kind": "null_spike",
+      "detected": true,
+      "delay_ticks": 0.0
+    },
+    {
+      "incident_id": "course-benchmark:users:test:volume_jump",
+      "kind": "volume_jump",
+      "detected": true,
+      "delay_ticks": 5.0
+    },
+    {
+      "incident_id": "course-benchmark:users:test:regime_change",
+      "kind": "regime_change",
+      "detected": true,
+      "delay_ticks": 0.0
+    },
+    {
+      "incident_id": "course-benchmark:orders:test:null_spike",
+      "kind": "null_spike",
+      "detected": true,
+      "delay_ticks": 0.0
+    },
+    {
+      "incident_id": "course-benchmark:orders:test:volume_jump",
+      "kind": "volume_jump",
+      "detected": true,
+      "delay_ticks": 2.0
+    },
+    {
+      "incident_id": "course-benchmark:orders:test:regime_change",
+      "kind": "regime_change",
+      "detected": true,
+      "delay_ticks": 0.0
+    },
+    {
+      "incident_id": "course-benchmark:events:test:null_spike",
+      "kind": "null_spike",
+      "detected": true,
+      "delay_ticks": 0.0
+    },
+    {
+      "incident_id": "course-benchmark:events:test:volume_jump",
+      "kind": "volume_jump",
+      "detected": true,
+      "delay_ticks": 0.0
+    },
+    {
+      "incident_id": "course-benchmark:events:test:regime_change",
+      "kind": "regime_change",
+      "detected": true,
+      "delay_ticks": 0.0
+    }
+  ],
+  "quality_gate": {
+    "passed": false,
+    "checks": {
+      "event_recall": {
+        "actual": 1.0,
+        "target": 0.8,
+        "passed": true
+      },
+      "false_positive_rate": {
+        "actual": 0.13266998341625208,
+        "target": 0.1,
+        "passed": false
+      },
+      "abrupt_median_delay_ticks": {
+        "actual": 0.0,
+        "target": 1.0,
+        "passed": true
+      }
+    }
+  }
+}

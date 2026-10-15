@@ -1,0 +1,54 @@
+{
+  "code_git_sha": "a33b3c23c896ac1efd7a941382a98d829e4606d4",
+  "python": "3.12.14",
+  "packages": {
+    "pytest": "8.3.4",
+    "scikit-learn": "1.6.1",
+    "numpy": "2.5.3",
+    "pandas": "2.2.3",
+    "joblib": "1.5.3"
+  },
+  "commands": [
+    {
+      "command": [
+        "venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_model_quality.py",
+        "tests/test_quality_report.py",
+        "tests/test_anomaly_detector.py",
+        "tests/test_anomaly_alert_quality.py",
+        "--junitxml=/private/tmp/review26-pytest.xml"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "venv/bin/python",
+        "-m",
+        "scripts.check_model_quality",
+        "--report",
+        "/private/tmp/review26-report.json"
+      ],
+      "exit_code": 1
+    },
+    {
+      "command": [
+        "venv/bin/ruff",
+        "check",
+        "."
+      ],
+      "exit_code": 0
+    }
+  ],
+  "quality_gate_passed": false,
+  "source_sha256": {
+    "scripts/check_model_quality.py": "bb042178f5b27db31c7a617b837bcc8c86c1bae7873856253de39330fcb66df3",
+    "tests/test_model_quality.py": "8dff62e67ddbe91f6f0e0d00d4e44d09500a3b70c5e5de71fa9649c53fe0dcf8",
+    "tests/test_quality_report.py": "cae2a72c11162fd23ae26591cbe63d77c3c807424af4e759bbdad274368f26d4"
+  },
+  "verified_date": "2026-10-15",
+  "tests_passed": 56,
+  "note": "Tests ran before the code commit; verified source files are unchanged and identified by the hashes below. Archived #9 report is identical."
+}
