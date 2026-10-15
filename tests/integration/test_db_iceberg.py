@@ -8,8 +8,8 @@ Both share a Docker network so iceberg-rest can reach MinIO via the alias
 ``minio``. The Python test code (and IcebergAdapter) connect via host-mapped
 ports on localhost.
 
-Prerequisites: Docker daemon running. Runs only on push to master — same CI
-gate as the other integration tests (#44).
+Prerequisites: Docker daemon running. Runs on pull requests and pushes to
+master with the other integration tests (#44).
 """
 
 from __future__ import annotations
@@ -36,7 +36,12 @@ from testcontainers.core.network import Network  # noqa: E402
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-MINIO_IMAGE = "minio/minio:RELEASE.2024-01-16T16-07-38Z"
+# Upstream images are unavailable. Thanos mirrors RELEASE.2025-09-07T16-13-09Z;
+# pin the multi-platform manifest, also used by the Compose demo.
+MINIO_IMAGE = (
+    "quay.io/thanos/minio:RELEASE.2025-09-07T16-13-09Z"
+    "@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+)
 ICEBERG_REST_IMAGE = "tabulario/iceberg-rest:0.10.0"
 
 BUCKET = "iceberg-test"
