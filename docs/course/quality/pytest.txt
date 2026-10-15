@@ -1,4 +1,4 @@
-...............................................                          [100%]
+........................................................                 [100%]
 =============================== warnings summary ===============================
 tests/test_model_quality.py: 5436 warnings
 tests/test_anomaly_detector.py: 2416 warnings
@@ -7,5 +7,5 @@ tests/test_anomaly_detector.py: 2416 warnings
     array.shape = self.shape
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-- generated xml file: /Users/novikov/src/machine-learning/term3/ai-integration-development/artifacts/course-experiments/quality-check/pytest.xml -
-47 passed, 7852 warnings in 6.44s
+------------- generated xml file: /private/tmp/review26-pytest.xml -------------
+56 passed, 7852 warnings in 10.12s
