@@ -1,0 +1,46 @@
+[
+  {
+    "course": "ai",
+    "title": "В09. Проектирование API для ML-сервисов",
+    "path": "docs/course/netology/presentations/В09_API_FastAPI.pdf",
+    "source": "https://netology.ru/profile/program/bhemai-25-iair-3/lessons/658299/lesson_items/3564573",
+    "downloaded_filename": "В09_Проектирование_API_для_ML-сервисов_FastAPI.pdf",
+    "sha256": "ac8de0c9be16b4f0e821f48ac041e1faf064abde807fa2234c99c9cb4f4d2165",
+    "bytes": 4438221,
+    "checked_on": "2026-10-21",
+    "pages": 44
+  },
+  {
+    "course": "ai",
+    "title": "В10. Стратегии деплоя и релиз-процессы",
+    "path": "docs/course/netology/presentations/В10_Стратегии_деплоя.pdf",
+    "source": "https://netology.ru/profile/program/bhemai-25-iair-3/lessons/658300/lesson_items/3596671",
+    "downloaded_filename": "В10_Стратегии_деплоя_и_релиз-процессы.pdf",
+    "sha256": "e89d6c78f13319266d8b82f3eae27c17f8a1e6c2eb68fb2c4c181d3ea11719cd",
+    "bytes": 2077146,
+    "checked_on": "2026-10-21",
+    "pages": 48
+  },
+  {
+    "course": "ai",
+    "title": "В11. Контейнеризация Docker и Docker Compose",
+    "path": "docs/course/netology/presentations/В11_Docker_Compose.pdf",
+    "source": "https://netology.ru/profile/program/bhemai-25-iair-3/lessons/658301/lesson_items/3699549",
+    "downloaded_filename": "В11_Контейнеризация_Docker_и_Docker_Compose__1_.pdf",
+    "sha256": "dec93ac35a0a97d42162b819105189286f16626eaa11fe5b507eef27ee2ea21d",
+    "bytes": 2590996,
+    "checked_on": "2026-10-21",
+    "pages": 49
+  },
+  {
+    "course": "ai",
+    "title": "В12. Мониторинг и поддержка в продакшене",
+    "path": "docs/course/netology/presentations/В12_Мониторинг.pdf",
+    "source": "https://netology.ru/profile/program/bhemai-25-iair-3/lessons/658302/lesson_items/3699550",
+    "downloaded_filename": "В12_Мониторинг_и_поддержка_в_продакшене__1_.pdf",
+    "sha256": "080152f6928bf36e9def800971d44717fe1d90a0345fe4fc9954b6556955cd96",
+    "bytes": 3437727,
+    "checked_on": "2026-10-21",
+    "pages": 44
+  }
+]
