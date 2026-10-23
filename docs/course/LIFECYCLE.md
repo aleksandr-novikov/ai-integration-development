@@ -1,31 +1,52 @@
 # Жизненный цикл ИИ-системы обнаружения аномалий в DB Monitoring
 
-Цель — раньше обнаруживать нарушения качества данных; пользователь — специалист по качеству и эксплуатации данных. Isolation Forest выдаёт сигнал для ручной проверки, без автоматического исправления БД ([кейс](CASE.md)). Сбор, хранение, детектор, Flask API/интерфейс и Docker унаследованы от DB Monitoring; их наличие не означает выполнения заданий курса ([архитектура](../Architecture.md)).
+Цель — раньше обнаруживать нарушения качества данных. Для специалиста по качеству и эксплуатации данных Isolation Forest выдаёт сигнал для ручной проверки, без исправления БД ([кейс][case]).
 
-Срез на **23.10.2026**: «курс: есть» обозначает подготовленный учебный результат, «план» — ожидаемый результат открытой задачи. Статусы проверены в GitHub; номера и зависимости — в [ROADMAP](ROADMAP.md). Роли ниже функциональные, а не персональное распределение работы.
+**Унаследовано:** сбор/хранение, [планировщик][scheduler], [StandardScaler + Isolation Forest][detector], Flask API/интерфейс и Docker. **Курс, 23.10.2026:** «есть» — подтверждённый результат, «план» — будущая работа ([ROADMAP][roadmap]). Роли функциональные.
 
-| Этап | Вход | Действие в DB Monitoring | Результат и состояние | Основная роль |
-|---|---|---|---|---|
-| **1. Постановка бизнес-задачи** | Потребность замечать скачки объёма и доли NULL | Определить пользователя, проблему и границы ручного расследования | **Курс: есть** [CASE](CASE.md), задача [#1](https://github.com/aleksandr-novikov/ai-integration-development/issues/1) закрыта | Бизнес-заказчик |
-| **2. Формализация ML-задачи и критериев успеха** | Бизнес-цель, история метрик, определения инцидента и сигнала | Детекция без учителя: `score = decision_function`, `score < 0` — сигнал; оценка на более позднем размеченном периоде | **Курс: есть** [цели CASE](CASE.md): обнаружить ≥80% инцидентов, FPR ≤10%, медиана задержки резких событий ≤1 цикл. Фактическая проверка целей — этап 5 | Аналитик |
-| **3. Сбор и подготовка данных** | Снимки метрик таблиц; для оценки — синтетические инциденты | [Коллектор](../../collectors/metrics_collector.py) собирает метрики; [хранилище](../../app/metrics_storage.py) сохраняет историю; [scheduler](../../collectors/scheduler.py) запускает периодические задания. [Подготовка признаков](../../ml/anomaly_detector.py) совмещает timestamps и считает разности соседних доступных точек | **Унаследовано:** `row_count`, средняя по колонкам `null_rate`, `d_row_count`, `d_null_rate`. **Курс: есть** [датасет](DATASET.md) с разметкой и train/validation/test ([#7](https://github.com/aleksandr-novikov/ai-integration-development/issues/7)), [валидация](validation/README.md) ([#8](https://github.com/aleksandr-novikov/ai-integration-development/issues/8)); обе задачи закрыты | ML Engineer |
-| **4. Эксперименты и обучение модели** | Проверенные данные, четыре признака, варианты параметров | Обучить StandardScaler и Isolation Forest на train; выбрать параметры на validation, затем оценить выбранную модель на test | **Унаследовано:** [обучение и joblib](../../ml/anomaly_detector.py). **Курс: есть** [серия MLflow](experiments/RESULTS.md), [#9](https://github.com/aleksandr-novikov/ai-integration-development/issues/9) закрыта; автоматической публикации модели в приложение нет | Data Scientist |
-| **5. Тестирование и валидация** | Кандидат модели, независимые окна, критерии CASE | Проверить короткую историю, стабильный ряд, инциденты, шум и пропуски; сопоставить качество с целями | **Унаследовано:** [тесты детектора](../../tests/test_anomaly_detector.py). **Курс: есть** [поведенческие тесты](../../tests/test_model_quality.py) и [отчёт качества](quality/README.md) ([#10](https://github.com/aleksandr-novikov/ai-integration-development/issues/10) закрыта); baseline не проходит цель FPR. **План:** тестовая стратегия [#11](https://github.com/aleksandr-novikov/ai-integration-development/issues/11) | ML Engineer |
-| **6. Развёртывание модели** | Модель/scaler, результаты проверки, контракт и версия | В текущем контуре фоновый скоринг сохраняет оценки, [Flask API аномалий](../../app/api.py) читает их. Для учебного выпуска связать версии и проверить запуск/откат | **Унаследовано:** Flask-контур. **План:** версии [#5](https://github.com/aleksandr-novikov/ai-integration-development/issues/5), FastAPI [#12](https://github.com/aleksandr-novikov/ai-integration-development/issues/12), запуск [#13](https://github.com/aleksandr-novikov/ai-integration-development/issues/13), стратегия деплоя [#14](https://github.com/aleksandr-novikov/ai-integration-development/issues/14) по [ADR-001](../adr/001-flask-and-inference-service.md). Текущая baseline не получила положительного допуска по качеству | AI/MLOps Engineer |
-| **7. Мониторинг и сопровождение** | Новые метрики, технические ошибки, сигналы и подтверждения специалиста | Раздельно наблюдать данные контролируемых БД, приложение и качество детектора; по ухудшению уточнять данные и повторять эксперименты | **Унаследовано:** продуктовый [PSI/KS](../../ml/drift.py), технические [HTTP/collector-метрики](../../app/instrumentation.py), ночное [переобучение](../../collectors/scheduler.py). **План:** технический мониторинг курса [#15](https://github.com/aleksandr-novikov/ai-integration-development/issues/15), мониторинг входов/качества модели [#16](https://github.com/aleksandr-novikov/ai-integration-development/issues/16), стратегия дрейфа и проверяемого переобучения [#17](https://github.com/aleksandr-novikov/ai-integration-development/issues/17) | AI/MLOps Engineer |
+| Этап и ответственная роль | Вход | Действие в DB Monitoring | Результат |
+|---|---|---|---|
+| **1. Бизнес-задача**<br>Бизнес-заказчик | Поздно замеченные скачки объёма и NULL | Определить пользователя, полезный сигнал и границы расследования | **Есть:** постановка задачи в [CASE][case] |
+| **2. ML-задача и критерии**<br>Аналитик | Бизнес-цель, определения инцидента и сигнала | Сформулировать детекцию аномалий без учителя и измеримый успех | **Есть:** [цели][case] — ≥80% инцидентов, FPR ≤10%, медиана задержки резких событий ≤1 цикл |
+| **3. Сбор и подготовка данных**<br>ML Engineer | Снимки метрик таблиц, синтетические инциденты | [Собрать метрики][collector], [сохранить историю][storage], совместить временные точки и вычислить дельты | **Унаследовано:** `row_count`, средняя по колонкам `null_rate`, `d_row_count`, `d_null_rate`. **Есть в курсе:** [train/validation/test с разметкой][data] и [валидация][validation] |
+| **4. Эксперименты и обучение**<br>Data Scientist | Проверенные данные, варианты параметров | Обучить scaler и IF на train, сравнить на validation; выбранный вариант оценить на test | **Есть:** [серия MLflow][experiments] и кандидат модели; автоматической публикации в приложение нет |
+| **5. Тестирование и валидация**<br>ML Engineer | Кандидат, независимые окна, цели CASE | Проверить границы, инциденты, шум и пропуски; сопоставить качество с целями | **Есть:** [тесты][tests] и [отчёт][quality]; FPR 13,27% > 10%, допуска нет. **План:** стратегия тестов ([#11][issue11]) |
+| **6. Развёртывание**<br>AI/MLOps Engineer | Кандидат после допуска, версия, контракт | Сейчас [Flask API][api] читает сохранённые scores. Для учебного выпуска связать версии и проверить запуск/откат | **План:** FastAPI ([#12][issue12]), версии и выпуск по [ADR-001][adr] и [ROADMAP][roadmap] |
+| **7. Мониторинг и сопровождение**<br>AI/MLOps Engineer | Новые метрики, сигналы, ошибки, подтверждения специалиста | Раздельно наблюдать [PSI/KS данных БД][drift], [технику приложения][instrumentation] и качество детектора | **Унаследовано:** мониторинг БД/приложения, ночное обучение. **План:** мониторинг входов/качества ML и стратегия переобучения ([#16][issue16]/[#17][issue17]) |
 
 ```mermaid
-flowchart TB
-    A["1. Бизнес-задача"] --> B["2. ML-задача и критерии"]
-    B --> C["3. Подготовка данных"]
-    C --> D["4. Эксперименты и обучение"]
-    D --> E["5. Тестирование и валидация"]
+flowchart LR
+    A["1. Бизнес-задача"] --> B["2. ML-задача"]
+    B --> C["3. Данные"]
+    C --> D["4. Эксперименты"]
+    D --> E["5. Тестирование"]
     E --> F["6. Деплой"]
-    F --> G["7. Мониторинг и сопровождение"]
-    G -->|"План: уточнить данные и разметку"| C
-    G -->|"План: исследовать ухудшение, обучить кандидата"| D
+    F --> G["7. Мониторинг"]
+    G --> C
+    G --> D
 ```
 
-Обратные переходы — план работ #16/#17 с повторной проверкой кандидата на этапе 5; существующее ночное обучение само по себе не реализует этот процесс. PSI/KS по колонкам БД и технические метрики приложения не доказывают качество ML-модели.
+Возвраты 7 → 3 и 7 → 4 — **план** #16/#17: уточнить данные/разметку, исследовать ухудшение, обучить кандидата и повторить этап 5. Ночное обучение, PSI/KS и технические метрики сами по себе не подтверждают качество ML.
 
-Основание: [Issue #2](https://github.com/aleksandr-novikov/ai-integration-development/issues/2), ссылающийся на В01, слайд 62. Презентация В01 локально недоступна; названия семи этапов взяты из постановки задачи, требования — из Issue.
+Источники: **В01, Анна Арзамасова** — этапы (26–32), обратная связь (33, 50), роли (16–20, 52), конкретизация продукта (51), риски практики (53–56), домашнее задание — описание 7 этапов и схема на 1 странице (62); критерии приёмки — [Issue #2][issue].
+
+[case]: CASE.md
+[scheduler]: ../../collectors/scheduler.py
+[detector]: ../../ml/anomaly_detector.py
+[roadmap]: ROADMAP.md
+[collector]: ../../collectors/metrics_collector.py
+[storage]: ../../app/metrics_storage.py
+[data]: DATASET.md
+[validation]: validation/README.md
+[experiments]: experiments/RESULTS.md
+[tests]: ../../tests/test_model_quality.py
+[quality]: quality/README.md
+[api]: ../../app/api.py
+[adr]: ../adr/001-flask-and-inference-service.md
+[drift]: ../../ml/drift.py
+[instrumentation]: ../../app/instrumentation.py
+[issue]: https://github.com/aleksandr-novikov/ai-integration-development/issues/2
+[issue11]: https://github.com/aleksandr-novikov/ai-integration-development/issues/11
+[issue12]: https://github.com/aleksandr-novikov/ai-integration-development/issues/12
+[issue16]: https://github.com/aleksandr-novikov/ai-integration-development/issues/16
+[issue17]: https://github.com/aleksandr-novikov/ai-integration-development/issues/17
