@@ -44,6 +44,8 @@ pinned: false
 
 [Проверки качества модели и ограничения](docs/course/quality/README.md) · `python -m scripts.check_model_quality --report /tmp/model-quality.json` (для текущей baseline ожидается FAIL).
 
+[MLOps-roadmap на 6 месяцев: зрелость, практики и проверяемые результаты](docs/course/MLOPS_ROADMAP.md).
+
 ## DB Monitoring
 
 
