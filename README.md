@@ -37,6 +37,8 @@ pinned: false
 
 [Жизненный цикл ИИ-системы: семь этапов и схема](docs/course/LIFECYCLE.md).
 
+[Ограничения и проверка LLM-объяснений](docs/course/LLM_LIMITATIONS.md).
+
 [Актуальная архитектура: компоненты, потоки и ограничения](docs/Architecture.md) · [Решение по Flask и учебному FastAPI-сервису](docs/adr/001-flask-and-inference-service.md) · [Сверка архитектуры с кодом](docs/course/architecture-review.md).
 
 Подготовка датасета для экспериментов: `python -m scripts.generate_ml_dataset --output data/course`.
