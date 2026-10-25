@@ -35,6 +35,10 @@ pinned: false
 
 Описание кейса, критерии успеха и границы «унаследовано / выполнено в рамках курса»: [docs/course/CASE.md](docs/course/CASE.md)
 
+[Жизненный цикл ИИ-системы: семь этапов и схема](docs/course/LIFECYCLE.md).
+
+[Ограничения и проверка LLM-объяснений](docs/course/LLM_LIMITATIONS.md).
+
 [Актуальная архитектура: компоненты, потоки и ограничения](docs/Architecture.md) · [Решение по Flask и учебному FastAPI-сервису](docs/adr/001-flask-and-inference-service.md) · [Сверка архитектуры с кодом](docs/course/architecture-review.md).
 
 Подготовка датасета для экспериментов: `python -m scripts.generate_ml_dataset --output data/course`.
@@ -45,6 +49,8 @@ pinned: false
 [Проверки качества модели и ограничения](docs/course/quality/README.md) · `python -m scripts.check_model_quality --report /tmp/model-quality.json` (для текущей baseline ожидается FAIL).
 
 [Версии модели: происхождение, проверка целостности, явный выбор и откат](docs/course/models/README.md).
+
+[MLOps-roadmap на 6 месяцев: зрелость, практики и проверяемые результаты](docs/course/MLOPS_ROADMAP.md).
 
 ## DB Monitoring
 

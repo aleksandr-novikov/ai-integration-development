@@ -155,6 +155,9 @@ ruff check .
 Сохранены предупреждения joblib о NumPy 2.5. CLI проверен на неизменном экспорте:
 обычная активация вернула 2, демо-активация и предсказание — 0.
 Результаты и хеши исходников: [verification.json](verification.json).
+После обновления из master (`a1c814d`) расширенный профиль с LLM-аудитом:
+**213 passed, 3 xfailed**. Это существующие дефекты изоляции LLM из #18/#12;
+они не исправляются и не скрываются данной задачей.
 
 Основания: [Issue #5](https://github.com/aleksandr-novikov/ai-integration-development/issues/5),
 [ADR-001](../../adr/001-flask-and-inference-service.md), В03, слайды 20–26 и 31–34.
