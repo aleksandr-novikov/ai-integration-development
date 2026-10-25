@@ -3,6 +3,11 @@ pytest==8.3.4
 coverage==7.13.5
 ruff==0.9.4
 
+# OpenAPI documents and HTTP contract tests (course #4).
+openapi-spec-validator==0.7.2
+PyYAML==6.0.2
+jsonschema==4.23.0
+
 # Integration tests (#44, #124) — real DBs + Iceberg via Docker containers.
 # `pytest -m integration` opts in; default test runs skip these.
 testcontainers[postgres,mysql,clickhouse]==4.10.0

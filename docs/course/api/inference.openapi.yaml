@@ -1,0 +1,224 @@
+openapi: 3.1.0
+info:
+  title: DB Monitoring — контракт внутреннего инференса
+  version: 1.0.0
+  description: |
+    Проект контракта #4 по ADR-001. Endpoint ещё НЕ реализован: реализация,
+    авторизация и миграции — #12, публикация артефакта — #5.
+    Сервис принимает готовые немасштабированные признаки от доверенного
+    Flask-адаптера; не читает историю, не вычисляет дельты и не вызывает fit.
+servers:
+  - url: http://localhost:8000
+    description: Планируемый адрес учебного стенда, сейчас сервис отсутствует
+security:
+  - AdapterBearer: []
+paths:
+  /v1/predict:
+    post:
+      operationId: predictAnomaly
+      summary: Оценить одну точку выбранной опубликованной моделью
+      description: |
+        Планируемый внутренний endpoint. Только application/json с конечными
+        JSON-числами; NaN/Infinity недопустимы. До доступа к модели проверить
+        principal токена и разрешённый source. Поля project_id/connection_id
+        сами по себе прав не предоставляют. Модель и scaler фиксируются
+        вместе на весь запрос; при отсутствии модели нет скрытого обучения.
+        Предыдущую согласованную точку выбирает адаптер. Без неё он не
+        вызывает этот endpoint и сообщает insufficient_history своему клиенту.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PredictionRequest'
+            example:
+              source: {project_id: project-a, connection_id: connection-a, schema_name: public, table_name: orders}
+              observed_at: '2026-10-25T12:00:00+00:00'
+              previous_observed_at: '2026-10-25T11:45:00+00:00'
+              model_version: demo-if-2026-09-26
+              feature_schema_version: 1.0.0
+              features: {row_count: 110.0, null_rate: 0.03, d_row_count: 10.0, d_null_rate: 0.01}
+      responses:
+        '200':
+          description: |
+            source и observed_at соответствуют запросу; возвращены фактически
+            использованные версии. is_anomaly = (score < 0), threshold = 0.
+            Обновление/откат активной модели не меняет уже сохранённый ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionResponse'
+              example:
+                source: {project_id: project-a, connection_id: connection-a, schema_name: public, table_name: orders}
+                observed_at: '2026-10-25T12:00:00+00:00'
+                model_version: demo-if-2026-09-26
+                feature_schema_version: 1.0.0
+                score: -0.12
+                threshold: 0
+                is_anomaly: true
+        '400':
+          description: Неразбираемый JSON, в том числе NaN/Infinity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: {code: invalid_json, message: Требуется корректный JSON}}
+        '401':
+          description: Токен отсутствует или недействителен; никаких чтений модели
+          headers:
+            WWW-Authenticate:
+              schema: {type: string}
+              example: Bearer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: {code: authentication_required, message: Требуется сервисный токен}}
+        '403':
+          description: Principal токена не имеет доступа к указанному source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: {code: source_forbidden, message: Источник недоступен}}
+        '409':
+          description: |
+            Синтаксически корректная версия схемы не поддерживается
+            (в v1 поддерживается 1.0.0) или несовместима с выбранным артефактом.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: {code: feature_schema_mismatch, message: Несовместимая схема признаков}}
+        '415':
+          description: Content-Type отличается от application/json
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: {code: unsupported_media_type, message: Требуется application/json}}
+        '422':
+          description: |
+            Неверные типы/границы/поля, время без часового пояса,
+            previous_observed_at >= observed_at или противоречивые признаки.
+            row_count - d_row_count >= 0; null_rate - d_null_rate в [0, 1].
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: {code: invalid_input, message: Неверные входные признаки}}
+        '503':
+          description: |
+            Для разрешённого источника указанная опубликованная модель/scaler
+            отсутствует, не загружается или не прошла проверку целостности.
+            Артефакт не заменяется моделью другого источника или последним joblib.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: {code: model_unavailable, message: Опубликованная модель недоступна}}
+        '500':
+          description: Техническая ошибка без traceback, путей и секретов в ответе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: {code: internal_error, message: Ошибка инференса}}
+components:
+  securitySchemes:
+    AdapterBearer:
+      type: http
+      scheme: bearer
+      description: |
+        Оpaque сервисный токен авторизованного Flask-адаптера, не cookie
+        браузера и не project_id. Секрет вне репозитория; principal связан
+        с allowlist полного source. За пределами изолированного локального
+        стенда — TLS. Проверка пользователя/членства остаётся во Flask.
+  schemas:
+    Source:
+      type: object
+      required: [project_id, connection_id, schema_name, table_name]
+      additionalProperties: false
+      description: |
+        Идентичность данных: проект + подключение + схема/namespace + таблица.
+        Для Iceberg schema_name — полный effective namespace.
+        Все четыре поля сравниваются точно, без приведения регистра.
+      properties:
+        project_id: {type: string, minLength: 1, maxLength: 128}
+        connection_id: {type: string, minLength: 1, maxLength: 128}
+        schema_name: {type: string, minLength: 1, maxLength: 255}
+        table_name: {type: string, minLength: 1, maxLength: 255}
+    ModelVersion:
+      type: string
+      pattern: '^(?!legacy-unknown$)[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      description: Неизменяемый ID опубликованного манифеста #5, не путь к файлу
+    FeatureSchemaVersion:
+      type: string
+      pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+      description: Версия построения признаков; поддерживается 1.0.0, другие дают 409
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339 с обязательным часовым поясом; сравнение по времени UTC
+    Features:
+      type: object
+      required: [row_count, null_rate, d_row_count, d_null_rate]
+      additionalProperties: false
+      description: |
+        Четыре конечных числа до scaler. Вектор строится в порядке
+        row_count, null_rate, d_row_count, d_null_rate. Дельты — разности
+        с предыдущим доступным согласованным наблюдением, без деления на время.
+      properties:
+        row_count: {type: number, minimum: 0}
+        null_rate: {type: number, minimum: 0, maximum: 1}
+        d_row_count: {type: number}
+        d_null_rate: {type: number, minimum: -1, maximum: 1}
+    PredictionRequest:
+      type: object
+      required: [source, observed_at, previous_observed_at, model_version, feature_schema_version, features]
+      additionalProperties: false
+      properties:
+        source:
+          $ref: '#/components/schemas/Source'
+        observed_at:
+          $ref: '#/components/schemas/Timestamp'
+        previous_observed_at:
+          $ref: '#/components/schemas/Timestamp'
+        model_version:
+          $ref: '#/components/schemas/ModelVersion'
+        feature_schema_version:
+          $ref: '#/components/schemas/FeatureSchemaVersion'
+        features:
+          $ref: '#/components/schemas/Features'
+    PredictionResponse:
+      type: object
+      required: [source, observed_at, model_version, feature_schema_version, score, threshold, is_anomaly]
+      additionalProperties: true
+      properties:
+        source:
+          $ref: '#/components/schemas/Source'
+        observed_at:
+          $ref: '#/components/schemas/Timestamp'
+        model_version:
+          $ref: '#/components/schemas/ModelVersion'
+        feature_schema_version:
+          $ref: '#/components/schemas/FeatureSchemaVersion'
+        score:
+          type: number
+          description: Сырой decision_function, без min-max нормализации
+        threshold: {type: number, const: 0}
+        is_anomaly: {type: boolean}
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              enum: [invalid_json, authentication_required, source_forbidden, feature_schema_mismatch, unsupported_media_type, invalid_input, model_unavailable, internal_error]
+            message: {type: string, minLength: 1}

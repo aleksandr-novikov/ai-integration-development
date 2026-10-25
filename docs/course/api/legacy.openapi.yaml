@@ -1,0 +1,216 @@
+openapi: 3.1.0
+info:
+  title: DB Monitoring — текущий Flask ML API
+  version: 1.0.0
+  description: |
+    Описание существующих маршрутов на базе cc77aab, а не новый API /v1.
+    Сессия выбирает доступный проект; без сессии используется legacy.
+    Обязательной авторизации у этих маршрутов сейчас нет. project_id
+    в query не выбирает проект. Версии модели в сохранённых scores нет.
+    Эти ограничения исправляются отдельно в #4/#5/#12.
+servers:
+  - url: http://localhost:5001
+    description: Существующий локальный стенд
+security:
+  - {}
+  - SessionCookie: []
+paths:
+  /api/anomalies/{table_name}:
+    get:
+      operationId: readStoredAnomalies
+      summary: Прочитать сохранённые оценки аномальности
+      description: |
+        Читает scores текущего проекта, не запускает обучение или scoring.
+        Пустая история, неизвестная таблица и отсутствие сохранённых scores
+        дают одинаковый ответ 200 []. Наличие модели отдельно не проверяется.
+        features добавляется по возможности только для аномальных точек.
+        is_anomaly — целое 0/1, а не boolean. Лимит числа точек не задан.
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [1h, 6h, 24h, 7d, 14d, 30d]
+            default: 7d
+          description: Окно назад от текущего времени сервера
+      responses:
+        '200':
+          description: Оценки от старых к новым или пустой массив
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AnomalyPoint'
+              examples:
+                normal:
+                  value: [{ts: '2026-10-25T12:00:00+00:00', score: 0.12, is_anomaly: 0}]
+                empty:
+                  value: []
+        '400':
+          description: Недопустимый range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+              example:
+                error: "range must be one of ['14d', '1h', '24h', '30d', '6h', '7d']"
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/forecast/{table_name}:
+    get:
+      operationId: readForecast
+      summary: Построить прогноз метрики
+      description: |
+        Доступен только при FF_FORECAST=true. По умолчанию флаг выключен.
+        Использует сохранённую модель либо может обучить её в запросе.
+        При недостаточной истории возвращает 422, а не пустой массив.
+        Это legacy-поведение; будущий inference API не обучается на запросе.
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - name: metric
+          in: query
+          schema:
+            type: string
+            enum: [row_count, size_bytes]
+            default: row_count
+        - name: horizon
+          in: query
+          schema:
+            type: string
+            enum: [1d, 3d, 7d, 14d, 30d]
+            default: 7d
+      responses:
+        '200':
+          description: Почасовые точки прогноза; значения неотрицательны
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ForecastPoint'
+              example:
+                - {ts: '2026-10-25T13:00:00+00:00', yhat: 110.0, yhat_lower: 105.0, yhat_upper: 115.0}
+        '400':
+          description: Недопустимые metric или horizon (при включённом флаге)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+              example:
+                error: "metric must be one of ['row_count', 'size_bytes']"
+        '404':
+          description: Функция выключена; стандартная HTML-страница Flask
+          content:
+            text/html:
+              schema:
+                type: string
+        '422':
+          description: Недостаточно истории для прогноза, в том числе для неизвестной таблицы
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, message]
+                additionalProperties: false
+                properties:
+                  error:
+                    const: insufficient_data
+                    type: string
+                  message:
+                    type: string
+              example:
+                error: insufficient_data
+                message: need at least 2 points for orders.row_count, got 0
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+      description: Необязательная существующая сессия Flask-Login, выбирающая проект
+  parameters:
+    TableName:
+      name: table_name
+      in: path
+      required: true
+      description: Имя таблицы в текущем проекте; без идентичности подключения/схемы
+      schema:
+        type: string
+      example: orders
+  responses:
+    InternalError:
+      description: |
+        Необработанная ошибка хранилища/модели. В обычном режиме Flask —
+        HTML 500; единая JSON-схема технических ошибок пока не реализована.
+      content:
+        text/html:
+          schema:
+            type: string
+  schemas:
+    LegacyError:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+    FeatureValues:
+      type: object
+      required: [row_count, null_rate, d_row_count, d_null_rate]
+      additionalProperties: false
+      properties:
+        row_count:
+          type: number
+        null_rate:
+          type: number
+        d_row_count:
+          type: number
+        d_null_rate:
+          type: number
+    AnomalyPoint:
+      type: object
+      required: [ts, score, is_anomaly]
+      additionalProperties: true
+      properties:
+        ts:
+          type: string
+          format: date-time
+        score:
+          type: number
+          description: Не нормализованный decision_function Isolation Forest
+        is_anomaly:
+          type: integer
+          enum: [0, 1]
+        features:
+          type: object
+          required: [values, z_scores, top_feature]
+          additionalProperties: false
+          properties:
+            values:
+              $ref: '#/components/schemas/FeatureValues'
+            z_scores:
+              $ref: '#/components/schemas/FeatureValues'
+            top_feature:
+              type: string
+              enum: [row_count, null_rate, d_row_count, d_null_rate]
+    ForecastPoint:
+      type: object
+      required: [ts, yhat, yhat_lower, yhat_upper]
+      additionalProperties: true
+      properties:
+        ts:
+          type: string
+          format: date-time
+        yhat:
+          type: number
+          minimum: 0
+        yhat_lower:
+          type: number
+          minimum: 0
+        yhat_upper:
+          type: number
+          minimum: 0
