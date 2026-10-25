@@ -44,6 +44,8 @@ pinned: false
 
 [Проверки качества модели и ограничения](docs/course/quality/README.md) · `python -m scripts.check_model_quality --report /tmp/model-quality.json` (для текущей baseline ожидается FAIL).
 
+[Версии модели: происхождение, проверка целостности, явный выбор и откат](docs/course/models/README.md).
+
 ## DB Monitoring
 
 

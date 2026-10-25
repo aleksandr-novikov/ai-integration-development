@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from app.metrics_storage import get_metrics
+from ml.features import FEATURE_NAMES, build_rows
 
 try:
     import numpy as np
@@ -63,9 +64,6 @@ def _parse_ts(value: str | datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-FEATURE_NAMES = ("row_count", "null_rate", "d_row_count", "d_null_rate")
-
-
 def _load_features(
     table: str, window: timedelta, project_id: str = "legacy"
 ) -> tuple[list[datetime], np.ndarray]:
@@ -74,7 +72,8 @@ def _load_features(
     Features: [row_count, null_rate, Δrow_count, Δnull_rate].
     Only ticks where BOTH row_count AND null_rate are available are kept.
     The first tick is dropped after computing deltas, so n_rows = aligned - 1.
-    Raises InsufficientDataError when the result has fewer than MIN_POINTS rows.
+    Raises InsufficientDataError when fewer than two aligned input ticks exist.
+    train() separately enforces MIN_POINTS on the resulting feature rows.
     """
     if not _HAS_SKLEARN:
         raise ImportError("scikit-learn is required for anomaly detection")
@@ -82,28 +81,13 @@ def _load_features(
     rc_rows = get_metrics(table, "row_count", project_id, window=window)
     nr_rows = get_metrics(table, "null_rate", project_id, window=window)
 
-    rc_map = {r["ts"]: float(r["value"]) for r in rc_rows}
-    nr_map = {r["ts"]: float(r["value"]) for r in nr_rows}
-
-    # Inner join on timestamp — only ticks with both metrics present.
-    common_ts = sorted(set(rc_map) & set(nr_map))
-    if len(common_ts) < 2:
+    raw_timestamps, vectors = build_rows(rc_rows, nr_rows)
+    if not vectors:
         raise InsufficientDataError(
-            f"need at least 2 aligned ticks for {table}, got {len(common_ts)}"
+            f"need at least 2 aligned ticks for {table}"
         )
-
-    rc_vals = [rc_map[ts] for ts in common_ts]
-    nr_vals = [nr_map[ts] for ts in common_ts]
-
-    # Compute deltas (drops first element).
-    d_rc = [rc_vals[i] - rc_vals[i - 1] for i in range(1, len(rc_vals))]
-    d_nr = [nr_vals[i] - nr_vals[i - 1] for i in range(1, len(nr_vals))]
-    timestamps = [_parse_ts(ts) for ts in common_ts[1:]]
-
-    X = np.array(
-        [[rc_vals[i + 1], nr_vals[i + 1], d_rc[i], d_nr[i]] for i in range(len(d_rc))],
-        dtype=float,
-    )
+    timestamps = [_parse_ts(ts) for ts in raw_timestamps]
+    X = np.asarray(vectors, dtype=float)
     return timestamps, X
 
 
