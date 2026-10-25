@@ -35,6 +35,8 @@ pinned: false
 
 Описание кейса, критерии успеха и границы «унаследовано / выполнено в рамках курса»: [docs/course/CASE.md](docs/course/CASE.md)
 
+[Жизненный цикл ИИ-системы: семь этапов и схема](docs/course/LIFECYCLE.md).
+
 [Актуальная архитектура: компоненты, потоки и ограничения](docs/Architecture.md) · [Решение по Flask и учебному FastAPI-сервису](docs/adr/001-flask-and-inference-service.md) · [Сверка архитектуры с кодом](docs/course/architecture-review.md).
 
 Подготовка датасета для экспериментов: `python -m scripts.generate_ml_dataset --output data/course`.
