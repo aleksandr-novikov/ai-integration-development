@@ -19,12 +19,31 @@ paths:
       summary: Оценить одну точку выбранной опубликованной моделью
       description: |
         Планируемый внутренний endpoint. Только application/json с конечными
-        JSON-числами; NaN/Infinity недопустимы. До доступа к модели проверить
+        JSON-числами binary64; NaN/Infinity/-Infinity и переполнение при
+        декодировании (например, 1e400) дают 400. Строки и boolean не приводятся
+        к числам, а дают 422. До доступа к модели проверить
         principal токена и разрешённый source. Поля project_id/connection_id
         сами по себе прав не предоставляют. Модель и scaler фиксируются
         вместе на весь запрос; при отсутствии модели нет скрытого обучения.
         Предыдущую согласованную точку выбирает адаптер. Без неё он не
         вызывает этот endpoint и сообщает insufficient_history своему клиенту.
+        model_version ищется только в области разрешённого полного source.
+        Отсутствующая версия и версия другого источника одинаково дают 503.
+      x-json-policy:
+        strict-decoding: true
+        finite-binary64: true
+        coerce-numeric-strings: false
+        coerce-booleans: false
+      x-validation-order:
+        - '401: проверить сервисный токен'
+        - '415/400: проверить Content-Type и строго декодировать JSON'
+        - '422: проверить структуру, типы и ограничения полей'
+        - '403: проверить доступ к полному source'
+        - '409: проверить поддержку feature_schema_version сервисом'
+        - '422: проверить порядок времени и согласованность признаков'
+        - '503: найти model_version только для разрешённого source; проверить манифест'
+        - '409: сверить схему запроса с целостным манифестом до загрузки модели'
+        - '503: проверить наличие, целостность и загрузку модели/scaler'
       requestBody:
         required: true
         content:
@@ -57,7 +76,7 @@ paths:
                 threshold: 0
                 is_anomaly: true
         '400':
-          description: Неразбираемый JSON, в том числе NaN/Infinity
+          description: Неразбираемый JSON, NaN/Infinity/-Infinity или переполнение binary64
           content:
             application/json:
               schema:
@@ -97,6 +116,8 @@ paths:
           description: |
             Синтаксически корректная версия схемы не поддерживается
             (в v1 поддерживается 1.0.0) или несовместима с выбранным артефактом.
+            Совместимость проверяется по целостному манифесту разрешённого
+            источника до десериализации модели; порядок — x-validation-order.
           content:
             application/json:
               schema:
@@ -135,6 +156,8 @@ paths:
           description: |
             Для разрешённого источника указанная опубликованная модель/scaler
             отсутствует, не загружается или не прошла проверку целостности.
+            Версия другого источника считается отсутствующей; её существование
+            не раскрывается. Повреждённый манифест также даёт 503, не 409.
             Артефакт не заменяется моделью другого источника или последним joblib.
           content:
             application/json:
@@ -176,8 +199,8 @@ components:
         Для Iceberg schema_name — полный effective namespace.
         Все четыре поля сравниваются точно, без приведения регистра.
       properties:
-        project_id: {type: string, minLength: 1, maxLength: 128}
-        connection_id: {type: string, minLength: 1, maxLength: 128}
+        project_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        connection_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
         schema_name: {type: string, minLength: 1, maxLength: 255}
         table_name: {type: string, minLength: 1, maxLength: 255}
     ModelVersion:
@@ -186,7 +209,8 @@ components:
       description: Неизменяемый ID опубликованного манифеста #5, не путь к файлу
     FeatureSchemaVersion:
       type: string
-      pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+      maxLength: 32
+      pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
       description: Версия построения признаков; поддерживается 1.0.0, другие дают 409
     Timestamp:
       type: string
@@ -201,10 +225,10 @@ components:
         row_count, null_rate, d_row_count, d_null_rate. Дельты — разности
         с предыдущим доступным согласованным наблюдением, без деления на время.
       properties:
-        row_count: {type: number, minimum: 0}
-        null_rate: {type: number, minimum: 0, maximum: 1}
-        d_row_count: {type: number}
-        d_null_rate: {type: number, minimum: -1, maximum: 1}
+        row_count: {type: number, format: double, minimum: 0}
+        null_rate: {type: number, format: double, minimum: 0, maximum: 1}
+        d_row_count: {type: number, format: double}
+        d_null_rate: {type: number, format: double, minimum: -1, maximum: 1}
     PredictionRequest:
       type: object
       required: [source, observed_at, previous_observed_at, model_version, feature_schema_version, features]
@@ -248,8 +272,9 @@ components:
           $ref: '#/components/schemas/FeatureSchemaVersion'
         score:
           type: number
+          format: double
           description: Сырой decision_function, без min-max нормализации
-        threshold: {type: number, const: 0}
+        threshold: {type: number, format: double, const: 0}
         is_anomaly: {type: boolean}
     Error:
       type: object

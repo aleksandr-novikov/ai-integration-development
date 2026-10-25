@@ -6,12 +6,14 @@ and input schema are checked; actual HTTP/auth/model integration belongs to #12.
 
 import copy
 import json
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+from jsonschema.validators import extend
 from openapi_spec_validator import validate
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
@@ -29,6 +31,41 @@ FORECAST = "/api/forecast/{table_name}"
 PREDICT = "/v1/predict"
 
 
+def _finite_number(checker, value):
+    if not Draft202012Validator.TYPE_CHECKER.is_type(value, "number"):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+# JSON Schema assumes JSON numbers. Enforce the contract's binary64 policy
+# for host-language values too; this helper is not the future HTTP decoder.
+ContractValidator = extend(
+    Draft202012Validator,
+    type_checker=Draft202012Validator.TYPE_CHECKER.redefine("number", _finite_number),
+)
+
+
+def _strict_json(raw):
+    """Reference decoding policy only; the actual server belongs to #12."""
+    def reject(token):
+        raise ValueError(f"Non-JSON numeric token: {token}")
+
+    def finite_float(token):
+        value = float(token)
+        if not math.isfinite(value):
+            raise ValueError("Number overflows binary64")
+        return value
+
+    return json.loads(raw, parse_constant=reject, parse_float=finite_float, parse_int=finite_float)
+
+
+def _past_stamp():
+    return (datetime.now(UTC) - timedelta(minutes=1)).isoformat(timespec="seconds")
+
+
 def _escape(value):
     return str(value).replace("~", "~0").replace("/", "~1")
 
@@ -39,7 +76,7 @@ def _validator(spec, *path):
     resource = Resource.from_contents(spec, default_specification=DRAFT202012)
     registry = Registry().with_resource(uri, resource)
     pointer = "/".join(_escape(part) for part in path)
-    return Draft202012Validator(
+    return ContractValidator(
         {"$ref": f"{uri}#/{pointer}"}, registry=registry, format_checker=FormatChecker()
     )
 
@@ -137,7 +174,7 @@ def test_stored_anomaly_does_not_require_model_or_trigger_training(contract_app,
         pytest.fail("Reading persisted scores must not train a model")
 
     monkeypatch.setattr(detector, "train", forbidden)
-    stamp = datetime.now(UTC).isoformat(timespec="seconds")
+    stamp = _past_stamp()
     storage.save_anomaly_scores(
         [{"table_name": "orders", "ts": stamp, "score": -0.12, "is_anomaly": 1}]
     )
@@ -147,7 +184,7 @@ def test_stored_anomaly_does_not_require_model_or_trigger_training(contract_app,
 
 
 def test_optional_feature_breakdown_matches_contract(contract_app, monkeypatch):
-    stamp = datetime.now(UTC).isoformat(timespec="seconds")
+    stamp = _past_stamp()
     storage.save_anomaly_scores(
         [{"table_name": "orders", "ts": stamp, "score": -0.12, "is_anomaly": 1}]
     )
@@ -177,9 +214,13 @@ def test_invalid_forecast_parameters_match_contract(contract_app, query):
 
 def test_forecast_empty_history_matches_422_contract(contract_app):
     with contract_app.test_client() as client:
-        response = client.get("/api/forecast/missing")
+        response = client.get("/api/forecast/orders")
         assert response.status_code == 422
-        assert _check_http(response, FORECAST)["error"] == "insufficient_data"
+        assert _check_http(response, FORECAST) == (
+            LEGACY["paths"][FORECAST]["get"]["responses"]["422"]["content"][
+                "application/json"
+            ]["example"]
+        )
 
 
 def test_forecast_disabled_returns_html_even_for_bad_parameters(contract_app, monkeypatch):
@@ -214,7 +255,7 @@ def test_unhandled_runtime_error_returns_html_500(
 
 
 def test_forecast_real_linear_model_matches_response_contract(contract_app):
-    start = datetime.now(UTC) - timedelta(hours=9)
+    start = datetime.now(UTC) - timedelta(hours=9, minutes=1)
     storage.save_metrics(
         [
             {
@@ -236,7 +277,7 @@ def test_forecast_real_linear_model_matches_response_contract(contract_app):
 
 
 def test_current_session_selects_project_query_parameter_does_not(contract_app):
-    stamp = datetime.now(UTC).isoformat(timespec="seconds")
+    stamp = _past_stamp()
     clients = []
     for name, score in [("a", 0.1), ("b", 0.2)]:
         storage.create_user(name, f"{name}@example.test", "unused-hash")
@@ -317,14 +358,59 @@ def test_proposed_contract_rejects_legacy_unknown_as_published_model():
         _request_validator().validate(request)
 
 
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-def test_nonfinite_feature_cannot_be_serialized_as_contract_json(value):
-    # JSON Schema operates on parsed Python values, not the HTTP JSON parser.
-    # The future server must separately enforce this wire-format rule in #12.
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 10**400])
+@pytest.mark.parametrize("field", detector.FEATURE_NAMES)
+def test_contract_numeric_policy_rejects_nonfinite_host_features(field, value):
     request = _request_example()
-    request["features"]["row_count"] = value
+    request["features"][field] = value
+    with pytest.raises(ValidationError):
+        _request_validator().validate(request)
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity", "1e400", "1" + "0" * 400])
+def test_strict_json_policy_rejects_nonfinite_input_before_schema_validation(token):
+    raw = json.dumps(_request_example()).replace('"row_count": 110.0', f'"row_count": {token}')
     with pytest.raises(ValueError):
-        json.dumps(request, allow_nan=False)
+        _strict_json(raw)
+
+
+def test_strict_json_policy_preserves_a_valid_request_without_coercing_strings():
+    request = _request_example()
+    _request_validator().validate(_strict_json(json.dumps(request)))
+    request["features"]["row_count"] = "110"
+    with pytest.raises(ValidationError):
+        _request_validator().validate(_strict_json(json.dumps(request)))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 10**400])
+def test_contract_numeric_policy_rejects_nonfinite_response_score(value):
+    response = copy.deepcopy(
+        INFERENCE["paths"][PREDICT]["post"]["responses"]["200"]["content"]["application/json"][
+            "example"
+        ]
+    )
+    response["score"] = value
+    with pytest.raises(ValidationError):
+        _validator(INFERENCE, "components", "schemas", "PredictionResponse").validate(response)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("project_id", "a b"), ("connection_id", "a/b"), ("table_name", "x" * 256)],
+)
+def test_source_field_constraints(field, value):
+    request = _request_example()
+    request["source"][field] = value
+    with pytest.raises(ValidationError):
+        _request_validator().validate(request)
+
+
+@pytest.mark.parametrize("value", ["01.0.0", "1.0", "1.0.0-preview", "1" * 33 + ".0.0"])
+def test_feature_schema_version_syntax(value):
+    request = _request_example()
+    request["feature_schema_version"] = value
+    with pytest.raises(ValidationError):
+        _request_validator().validate(request)
 
 
 def test_renamed_score_breaks_contract_but_additive_response_field_does_not():
@@ -335,6 +421,10 @@ def test_renamed_score_breaks_contract_but_additive_response_field_does_not():
     validator = _validator(INFERENCE, "components", "schemas", "PredictionResponse")
     response["processing_ms"] = 2.5  # Backward-compatible optional response field.
     validator.validate(response)
+    response["source"]["database"] = "extra"  # Strict nested objects cannot grow in v1.
+    with pytest.raises(ValidationError):
+        validator.validate(response)
+    del response["source"]["database"]
     response["anomaly_score"] = response.pop("score")  # Breaking change.
     with pytest.raises(ValidationError, match="score"):
         validator.validate(response)
@@ -407,7 +497,10 @@ def test_proposed_features_follow_existing_alignment_and_delta_semantics(monkeyp
     request["previous_observed_at"] = rc[0]["ts"]
     _request_validator().validate(request)
     assert detector.FEATURE_NAMES == tuple(request["features"])
-    assert len(timestamps) == 1
+    assert timestamps == [datetime.fromisoformat(request["observed_at"])]
+    assert datetime.fromisoformat(request["previous_observed_at"]) < datetime.fromisoformat(
+        request["observed_at"]
+    )
     assert matrix[0] == pytest.approx(
         [request["features"][name] for name in detector.FEATURE_NAMES]
     )

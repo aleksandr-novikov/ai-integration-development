@@ -35,6 +35,10 @@ pinned: false
 
 Описание кейса, критерии успеха и границы «унаследовано / выполнено в рамках курса»: [docs/course/CASE.md](docs/course/CASE.md)
 
+[Жизненный цикл ИИ-системы: семь этапов и схема](docs/course/LIFECYCLE.md).
+
+[Ограничения и проверка LLM-объяснений](docs/course/LLM_LIMITATIONS.md).
+
 [Актуальная архитектура: компоненты, потоки и ограничения](docs/Architecture.md) · [Решение по Flask и учебному FastAPI-сервису](docs/adr/001-flask-and-inference-service.md) · [Сверка архитектуры с кодом](docs/course/architecture-review.md).
 
 [OpenAPI-контракты: текущий Flask API и проект внутреннего инференса](docs/course/api/README.md).
@@ -45,6 +49,8 @@ pinned: false
 Генератор создаёт 8 061 наблюдение трёх таблиц, 18 размеченных инцидентов, временные выборки train/validation/test и манифест с контрольными суммами. База данных не нужна. [Описание данных и протокол оценки](docs/course/DATASET.md).
 
 [Проверки качества модели и ограничения](docs/course/quality/README.md) · `python -m scripts.check_model_quality --report /tmp/model-quality.json` (для текущей baseline ожидается FAIL).
+
+[MLOps-roadmap на 6 месяцев: зрелость, практики и проверяемые результаты](docs/course/MLOPS_ROADMAP.md).
 
 ## DB Monitoring
 

@@ -64,7 +64,9 @@ paths:
       summary: Построить прогноз метрики
       description: |
         Доступен только при FF_FORECAST=true. По умолчанию флаг выключен.
-        Использует сохранённую модель либо может обучить её в запросе.
+        Повторно использует модель, если её last_ts отстаёт от последней точки
+        не более чем на час и last_changepoint_ts не изменился. Иначе, включая
+        отсутствие модели, может обучить её в запросе.
         При недостаточной истории возвращает 422, а не пустой массив.
         Это legacy-поведение; будущий inference API не обучается на запросе.
       parameters:
@@ -122,7 +124,7 @@ paths:
                     type: string
               example:
                 error: insufficient_data
-                message: need at least 2 points for orders.row_count, got 0
+                message: need at least 2 points for orders/row_count, got 0
         '500':
           $ref: '#/components/responses/InternalError'
 components:
