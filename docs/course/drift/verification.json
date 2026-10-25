@@ -39,8 +39,8 @@
     "Human review pending"
   ],
   "sha256": {
-    "docs/course/drift/STRATEGY.md": "e1684f9ce58cedeeee9ee8d7252a4d9409633aa0c9bd834b1a7c415bbcb4ae2e",
-    "docs/course/drift/STRATEGY.pdf": "42bd73951d677369fef6c97140d136e3178118f1774352a2792cd4b5d0220185",
+    "docs/course/drift/STRATEGY.md": "63d42dd8ee7636ae110761f21290bfa1f63b70f0eb637c4c220fa1ce7149b424",
+    "docs/course/drift/STRATEGY.pdf": "0ae0c33fcf2196f7d07c0f164e8e217cfdb5c14d74cd8cc7e8a1d5144dd4fc45",
     "docs/course/drift/demo.json": "93cee269a9d6792041da4979f9020c865a66045fcdcd7e3a7eb790d0169975a4",
     "scripts/check_drift_strategy.py": "ef268c1e1759a55e34262bc344cc2687643e49dde3faadd42dacc7b6bce35efd",
     "docs/course/drift/render_pdf.py": "37a08d75cd097869f6a66f1f4feabff051c2cf6a149e7cfec40256571698e397",
