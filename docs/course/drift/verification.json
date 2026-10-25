@@ -1,0 +1,49 @@
+{
+  "checked_on": "2026-10-25",
+  "base_commit": "6ffaa6b",
+  "python": "3.12.14",
+  "numpy": "2.5.3",
+  "scenario": {
+    "command": "python -m scripts.check_drift_strategy",
+    "result": "PASS; stable no_signal, two shifted windows signal row_count, inadequate minimum/coverage insufficient_data",
+    "repeated_output_byte_identical": true,
+    "production_policy_changed": false,
+    "model_training_performed": false
+  },
+  "pytest": {
+    "command": "python -m pytest -q tests/test_drift.py tests/test_scheduler_ml_retrain.py tests/test_schema_drift_per_project.py",
+    "passed": 28,
+    "duration_seconds": 17.42,
+    "database": "temporary SQLite; external credentials disabled"
+  },
+  "lint": {
+    "command": "ruff check scripts/check_drift_strategy.py docs/course/drift/render_pdf.py",
+    "result": "PASS"
+  },
+  "pdf": {
+    "pages": 2,
+    "page_size": "A4",
+    "body_font_points": 11,
+    "rendered_and_visually_checked_pages": [
+      1,
+      2
+    ],
+    "all_four_sections_present": true,
+    "renderer": "ReportLab; Arial/Arial Bold TTF provided on command line",
+    "command": "python docs/course/drift/render_pdf.py --font /path/to/Arial.ttf --bold-font '/path/to/Arial Bold.ttf'"
+  },
+  "limitations": [
+    "Synthetic independent marginals, not a production time series or concept-drift evidence",
+    "No new model-quality experiments; FPR 13.27% from #9 remains unchanged",
+    "No scheduler/API integration, real promotion/rollback, Docker or E2E run",
+    "Human review pending"
+  ],
+  "sha256": {
+    "docs/course/drift/STRATEGY.md": "63d42dd8ee7636ae110761f21290bfa1f63b70f0eb637c4c220fa1ce7149b424",
+    "docs/course/drift/STRATEGY.pdf": "0ae0c33fcf2196f7d07c0f164e8e217cfdb5c14d74cd8cc7e8a1d5144dd4fc45",
+    "docs/course/drift/demo.json": "93cee269a9d6792041da4979f9020c865a66045fcdcd7e3a7eb790d0169975a4",
+    "scripts/check_drift_strategy.py": "ef268c1e1759a55e34262bc344cc2687643e49dde3faadd42dacc7b6bce35efd",
+    "docs/course/drift/render_pdf.py": "37a08d75cd097869f6a66f1f4feabff051c2cf6a149e7cfec40256571698e397",
+    "ml/drift.py": "7446f407866292353598a0f65c1739c437113fb2428cadec5ba14f5b15687fb2"
+  }
+}
