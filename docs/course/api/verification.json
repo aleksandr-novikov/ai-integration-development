@@ -1,6 +1,6 @@
 {
   "task": 4,
-  "recorded_at_utc": "2026-10-25T13:35:28+00:00",
+  "recorded_at_utc": "2026-10-25T14:41:46+00:00",
   "base_git_sha": "cc77aab10c90fcd7abb749928e34dae4031b7389",
   "branch": "course/openapi-contract",
   "python": "3.12.7",
@@ -24,8 +24,8 @@
   },
   "files_sha256": {
     "docs/course/api/legacy.openapi.yaml": "a528da3e889342d0783d5c61abeecf401f7d9ef48e51f2c0fafaee0221b9ae24",
-    "docs/course/api/inference.openapi.yaml": "9ebc4390c80dcdf328346fe483f78c043cd71dca6dbbee8157b435c02475c7ec",
-    "tests/test_openapi_contract.py": "f4ab15818f931957415c52ebd20661f782f5cfe1e0d22642f3bd51a00608f553",
+    "docs/course/api/inference.openapi.yaml": "148a268dc689d25c7d48ce0a0341a569509b012f2e656ee22dcc808eaed477a0",
+    "tests/test_openapi_contract.py": "5fd0b13eecbde1eba3a7c2428dd59de44b9faef2abb1b384703efd0bfe1e73bc",
     "requirements-dev.txt": "344a04ce6401cdd94f1eb5be0ebd7d665c46c6e38e75f191ce2b4ca4608722bd"
   },
   "checks": [
@@ -42,8 +42,8 @@
     {
       "command": "python -m pytest -q tests/test_openapi_contract.py tests/test_api.py tests/test_forecast.py tests/test_anomaly_detector.py tests/test_tenant_isolation.py",
       "exit_code": 0,
-      "passed": 98,
-      "duration_seconds": 5.15,
+      "passed": 109,
+      "duration_seconds": 5.7,
       "warnings": {
         "count": 2416,
         "message": "joblib numpy_pickle: setting ndarray.shape deprecated in NumPy 2.5"
@@ -78,5 +78,23 @@
     "Swagger Editor UI",
     "latency/SLA measurements",
     "MLflow experiments"
-  ]
+  ],
+  "self_review": {
+    "reviewed_commit": "c1d436f00043e7cdf48c1d6599cbe8e58174a40d",
+    "findings_fixed": [
+      "PredictionResponse accepted is_anomaly inconsistent with score, including zero boundary.",
+      "Error responses accepted error.code intended for another HTTP status."
+    ],
+    "regression_before_fix": {
+      "command": "python -m pytest -q tests/test_openapi_contract.py -k 'requires_anomaly_flag or error_code_is_bound' --tb=short",
+      "exit_code": 1,
+      "failed": 11,
+      "deselected": 40
+    },
+    "regression_after_fix": "All 109 tests in the documented profile passed.",
+    "other_clarifications": [
+      "Idempotency refers to the same input and full key.",
+      "Forward-compatible response policy is a requirement for the future client."
+    ]
+  }
 }

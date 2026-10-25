@@ -340,6 +340,53 @@ def test_renamed_score_breaks_contract_but_additive_response_field_does_not():
         validator.validate(response)
 
 
+@pytest.mark.parametrize("score", [-0.12, 0.0, 0.12])
+def test_proposed_response_requires_anomaly_flag_to_match_score(score):
+    response = copy.deepcopy(
+        INFERENCE["paths"][PREDICT]["post"]["responses"]["200"]["content"]["application/json"][
+            "example"
+        ]
+    )
+    response["score"] = score
+    response["is_anomaly"] = score < 0
+    validator = _validator(INFERENCE, "components", "schemas", "PredictionResponse")
+    validator.validate(response)
+    response["is_anomaly"] = not response["is_anomaly"]
+    with pytest.raises(ValidationError):
+        validator.validate(response)
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        ("400", "invalid_json"),
+        ("401", "authentication_required"),
+        ("403", "source_forbidden"),
+        ("409", "feature_schema_mismatch"),
+        ("415", "unsupported_media_type"),
+        ("422", "invalid_input"),
+        ("503", "model_unavailable"),
+        ("500", "internal_error"),
+    ],
+)
+def test_proposed_error_code_is_bound_to_its_http_status(status, code):
+    validator = _validator(
+        INFERENCE,
+        "paths",
+        PREDICT,
+        "post",
+        "responses",
+        status,
+        "content",
+        "application/json",
+        "schema",
+    )
+    validator.validate({"error": {"code": code, "message": "Synthetic failure"}})
+    wrong = "invalid_input" if code != "invalid_input" else "model_unavailable"
+    with pytest.raises(ValidationError):
+        validator.validate({"error": {"code": wrong, "message": "Synthetic failure"}})
+
+
 def test_proposed_features_follow_existing_alignment_and_delta_semantics(monkeypatch):
     # A gap and an unmatched row_count must not become a zero-filled point
     # or a time-normalised delta. This exercises the actual legacy loader.

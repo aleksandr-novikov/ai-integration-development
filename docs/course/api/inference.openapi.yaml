@@ -62,6 +62,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+                properties:
+                  error:
+                    properties:
+                      code: {const: invalid_json}
               example: {error: {code: invalid_json, message: Требуется корректный JSON}}
         '401':
           description: Токен отсутствует или недействителен; никаких чтений модели
@@ -73,6 +77,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+                properties:
+                  error:
+                    properties:
+                      code: {const: authentication_required}
               example: {error: {code: authentication_required, message: Требуется сервисный токен}}
         '403':
           description: Principal токена не имеет доступа к указанному source
@@ -80,6 +88,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+                properties:
+                  error:
+                    properties:
+                      code: {const: source_forbidden}
               example: {error: {code: source_forbidden, message: Источник недоступен}}
         '409':
           description: |
@@ -89,6 +101,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+                properties:
+                  error:
+                    properties:
+                      code: {const: feature_schema_mismatch}
               example: {error: {code: feature_schema_mismatch, message: Несовместимая схема признаков}}
         '415':
           description: Content-Type отличается от application/json
@@ -96,6 +112,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+                properties:
+                  error:
+                    properties:
+                      code: {const: unsupported_media_type}
               example: {error: {code: unsupported_media_type, message: Требуется application/json}}
         '422':
           description: |
@@ -106,6 +126,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+                properties:
+                  error:
+                    properties:
+                      code: {const: invalid_input}
               example: {error: {code: invalid_input, message: Неверные входные признаки}}
         '503':
           description: |
@@ -116,6 +140,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+                properties:
+                  error:
+                    properties:
+                      code: {const: model_unavailable}
               example: {error: {code: model_unavailable, message: Опубликованная модель недоступна}}
         '500':
           description: Техническая ошибка без traceback, путей и секретов в ответе
@@ -123,6 +151,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+                properties:
+                  error:
+                    properties:
+                      code: {const: internal_error}
               example: {error: {code: internal_error, message: Ошибка инференса}}
 components:
   securitySchemes:
@@ -194,6 +226,17 @@ components:
       type: object
       required: [source, observed_at, model_version, feature_schema_version, score, threshold, is_anomaly]
       additionalProperties: true
+      allOf:
+        - if:
+            required: [score]
+            properties:
+              score: {exclusiveMaximum: 0}
+          then:
+            properties:
+              is_anomaly: {const: true}
+          else:
+            properties:
+              is_anomaly: {const: false}
       properties:
         source:
           $ref: '#/components/schemas/Source'
