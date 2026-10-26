@@ -1,0 +1,6 @@
+{
+  "project_id": "course-demo",
+  "connection_id": "synthetic-benchmark",
+  "schema_name": "public",
+  "table_name": "orders"
+}
