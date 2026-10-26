@@ -103,6 +103,7 @@ def collect_table_schema(
     table_name: str,
     schema: str | None = None,
     project_id: str = "legacy",
+    source: dict | None = None,
 ) -> list[dict]:
     """Snapshot one table's columns, diff vs stored snapshot, persist both.
 
@@ -116,6 +117,10 @@ def collect_table_schema(
         return []
     if not current:
         return []
+    if source is not None:
+        from app.source_storage import save_snapshot
+
+        save_snapshot(source, current)
 
     previous = get_schema_snapshot(table_name, project_id=project_id)
     events = diff_schemas(table_name, previous, current)

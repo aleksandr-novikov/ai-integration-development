@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Версии оценок — DB Monitor{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-semibold">Версии оценок аномалий</h1>
+{% if demo %}<p class="my-4 text-amber-700">Учебная демонстрация. Допуск качества модели не подтверждён.</p>{% endif %}
+{% if not entries %}
+<p class="mt-4">Для проекта ещё не выбран источник и опубликованная модель.</p>
+{% else %}
+<form method="get" class="my-4 flex flex-wrap gap-3">
+  <label>Источник
+    <select name="source" onchange="this.form.submit()">
+    {% for entry in entries %}
+      <option value="{{ loop.index0 }}" {% if loop.index0 == selected %}selected{% endif %}>{{ entry.source.connection_id }} / {{ entry.source.schema_name }} / {{ entry.source.table_name }}</option>
+    {% endfor %}
+    </select>
+  </label>
+</form>
+<form method="get" class="my-4">
+  <input type="hidden" name="source" value="{{ selected }}">
+  <label>Модель / схема признаков
+    <select name="version" onchange="this.form.submit()">
+    {% for version in versions %}
+      <option value="{{ version.model_version }}|{{ version.feature_schema_version }}" {% if version.model_version == payload.model_version and version.feature_schema_version == payload.feature_schema_version %}selected{% endif %}>{{ version.model_version }} / {{ version.feature_schema_version }}</option>
+    {% endfor %}
+    </select>
+  </label>
+</form>
+<p class="my-3">Проект: {{ payload.source.project_id }}. В таблице показана только выбранная пара версий.</p>
+<button id="predict" class="rounded bg-accent px-4 py-2 text-white">Оценить последнюю точку</button>
+<p id="prediction-status" role="status" class="my-3"></p>
+<table class="mt-4 w-full text-left"><thead><tr><th>Время UTC</th><th>Score</th><th>Аномалия</th></tr></thead>
+<tbody>{% for row in results %}<tr><td>{{ row.ts }}</td><td>{{ row.score }}</td><td>{{ 'Да' if row.is_anomaly else 'Нет' }}</td></tr>{% else %}<tr><td colspan="3">Сохранённых оценок этой версии пока нет.</td></tr>{% endfor %}</tbody></table>
+<details class="mt-6"><summary>Старые результаты: версия и источник неизвестны ({{ legacy|length }})</summary>
+<p>legacy-unknown: эти результаты не приписаны выбранной модели или подключению.</p>
+<table><tbody>{% for row in legacy %}<tr><td>{{ row.ts }}</td><td>{{ row.score }}</td></tr>{% endfor %}</tbody></table></details>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if payload %}<script>
+document.getElementById('predict').addEventListener('click', async () => {
+  const status = document.getElementById('prediction-status');
+  status.textContent = 'Выполняется оценка…';
+  try {
+    const response = await fetch('/api/inference/predict', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': {{ csrf_token()|tojson }}},
+      body: JSON.stringify({{ payload|tojson }})
+    });
+    const body = await response.json();
+    if (response.ok) window.location.reload();
+    else status.textContent = 'Оценка не выполнена: ' + (body.error?.code || 'ошибка запроса');
+  } catch (_) { status.textContent = 'Сервис недоступен. Попробуйте позже.'; }
+});
+</script>{% endif %}
+{% endblock %}

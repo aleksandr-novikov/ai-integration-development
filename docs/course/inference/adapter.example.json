@@ -1,0 +1,12 @@
+{
+  "url": "http://127.0.0.1:8000",
+  "token_env": "INFERENCE_ADAPTER_TOKEN",
+  "demo": true,
+  "bindings": [
+    {
+      "source": {"project_id": "project-a", "connection_id": "connection-a", "schema_name": "public", "table_name": "orders"},
+      "model_version": "REPLACE_WITH_STAGED_VERSION",
+      "feature_schema_version": "1.0.0"
+    }
+  ]
+}

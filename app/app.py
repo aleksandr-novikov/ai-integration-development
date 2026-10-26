@@ -286,6 +286,9 @@ def create_app(config: dict | None = None):
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(api)
+    from .inference_api import bp as inference_bp
+
+    app.register_blueprint(inference_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(projects_bp)

@@ -2,7 +2,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from flask import Blueprint, abort, g, redirect, render_template, url_for
+from flask import Blueprint, abort, g, redirect, render_template, request, url_for
 from flask_login import current_user
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
@@ -44,6 +44,44 @@ def _current_project_id() -> str:
     """g.current_project["id"] with a 'legacy' fallback — see api._current_project_id."""
     project = getattr(g, "current_project", None)
     return project["id"] if project else "legacy"
+
+
+def _inference_view():
+    from app import inference_adapter as adapter
+    from app import source_storage
+    from app.metrics_storage import get_anomaly_scores
+
+    if not current_user.is_authenticated or getattr(g, "current_project", None) is None:
+        abort(403)
+    entries = []
+    for entry in adapter.bindings(_current_project_id()):
+        try:
+            adapter.check_source(entry["source"])
+        except adapter.AdapterError:
+            continue
+        entries.append(entry)
+    selected = request.args.get("source", "0")
+    if not selected.isdecimal() or (entries and int(selected) >= len(entries)):
+        abort(400)
+    entry = entries[int(selected)] if entries else None
+    options, results, legacy, payload = [], [], [], None
+    if entry:
+        options = source_storage.versions(entry["source"])
+        active = {key: entry[key] for key in ("model_version", "feature_schema_version")}
+        if active not in options:
+            options.append(active)
+        version = request.args.get("version", active["model_version"] + "|" + active["feature_schema_version"])
+        chosen = next((item for item in options if item["model_version"] + "|" + item["feature_schema_version"] == version), None)
+        if chosen is None:
+            abort(400)
+        payload = {"source": entry["source"], **chosen}
+        results = source_storage.scores(entry["source"], **chosen)
+        legacy = get_anomaly_scores(entry["source"]["table_name"], _current_project_id())
+    return render_template(
+        "inference.html", entries=entries, selected=int(selected), payload=payload,
+        versions=options, results=results, legacy=legacy,
+        demo=adapter.configuration().get("demo", False) or any(row["demo"] for row in results),
+    )
 
 
 def _project_connections(project: dict | None) -> list[dict]:
@@ -154,6 +192,7 @@ bp = Blueprint(
     static_url_path="/static",
     url_prefix="/dashboard",
 )
+bp.add_url_rule("/inference", endpoint="inference", view_func=_inference_view)
 
 
 def _build_project_status(project_id: str, connections: list[dict], has_metrics: bool = False) -> dict | None:
@@ -176,7 +215,8 @@ def _build_project_status(project_id: str, connections: list[dict], has_metrics:
         with get_engine().connect() as conn:
             anomalies_7d = conn.execute(_text(
                 "SELECT COUNT(*) FROM anomaly_scores "
-                "WHERE project_id = :pid AND is_anomaly = 1 AND ts >= :since"
+                "WHERE project_id = :pid AND is_anomaly = 1 AND ts >= :since "
+                "AND model_version = 'legacy-unknown' AND feature_schema_version = 'legacy-unknown'"
             ), {"pid": project_id, "since": since_7d}).scalar() or 0
             schema_changes_7d = conn.execute(_text(
                 "SELECT COUNT(*) FROM schema_events "
@@ -271,7 +311,7 @@ def _ml_last_runs(project_id: str) -> dict[str, str | None]:
     }
     with get_engine().connect() as conn:
         out["isolation_forest"] = conn.execute(
-            text("SELECT MAX(ts) FROM anomaly_scores WHERE project_id = :project_id"),
+            text("SELECT MAX(ts) FROM anomaly_scores WHERE project_id = :project_id AND model_version = 'legacy-unknown' AND feature_schema_version = 'legacy-unknown'"),
             {"project_id": project_id},
         ).scalar()
         out["pelt"] = conn.execute(

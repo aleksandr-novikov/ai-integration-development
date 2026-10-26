@@ -250,8 +250,8 @@ class LoadedVersion:
         return self.predict(dict(zip(FEATURE_NAMES, vector, strict=True)))
 
 
-def load_version(root, version, *, source, demo=False):
-    """Verify manifest and artifact bytes BEFORE deserialization; no fallback."""
+def inspect_version(root, version, *, source):
+    """Read a verified, source-bound manifest without deserializing a model."""
     validate_source(source)
     if not isinstance(version, str) or not VERSION_PATTERN.fullmatch(version):
         raise RegistryError("invalid model_version")
@@ -265,6 +265,21 @@ def load_version(root, version, *, source, demo=False):
             raise RegistryError("manifest checksum mismatch")
         if manifest["format_version"] != 1 or manifest["source"] != source:
             raise RegistryError("source or manifest format mismatch")
+        _validate_training(manifest["training"])
+        if not isinstance(manifest["feature_schema_version"], str):
+            raise RegistryError("missing feature schema version")
+        return manifest
+    except RegistryError:
+        raise
+    except (OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise RegistryError("missing or malformed version manifest") from exc
+
+
+def load_version(root, version, *, source, demo=False, cached=None):
+    """Verify manifest and artifact bytes BEFORE deserialization; no fallback."""
+    manifest = inspect_version(root, version, source=source)
+    directory = Path(root) / "versions" / version
+    try:
         if (
             manifest["feature_schema_version"] != FEATURE_SCHEMA_VERSION
             or manifest["feature_schema_sha256"] != FEATURE_SCHEMA_SHA256
@@ -280,7 +295,10 @@ def load_version(root, version, *, source, demo=False):
         data = (directory / "pipeline.skops").read_bytes()
         if sha256(data) != artifact["sha256"]:
             raise RegistryError("model/scaler checksum mismatch")
-        pipeline = _load_pipeline(data, manifest["training"])
+        pipeline = (
+            cached.pipeline if cached is not None and cached.manifest == manifest
+            else _load_pipeline(data, manifest["training"])
+        )
     except RegistryError:
         raise
     except (OSError, KeyError, TypeError, ValueError, AttributeError) as exc:

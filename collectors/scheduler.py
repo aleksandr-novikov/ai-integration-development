@@ -322,6 +322,7 @@ def detect_changepoints() -> None:
 
 
 def retrain_anomaly_detectors() -> None:
+    from app.inference_adapter import is_served, score_project, train_candidates
     from app.metrics_storage import list_metric_tables, save_anomaly_scores
     from ml.anomaly_detector import InsufficientDataError, retrain_all, score_table
 
@@ -332,6 +333,18 @@ def retrain_anomaly_detectors() -> None:
         tables = list_metric_tables(project_id)
         if not tables and project_id != "legacy":
             continue
+        if any(is_served(project_id, table) for table in tables):
+            try:
+                train_candidates(project_id)
+            except Exception:
+                logger.exception("[project=%s] candidate training failed", project_id)
+            try:
+                score_project(project_id)
+            except Exception:
+                logger.exception("[project=%s] published inference failed", project_id)
+            tables = [table for table in tables if not is_served(project_id, table)]
+            if not tables:
+                continue
         counts = retrain_all(project_id=project_id, tables=tables or None)
         for k, v in counts.items():
             total_counts[k] = total_counts.get(k, 0) + v

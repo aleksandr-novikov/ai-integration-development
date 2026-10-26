@@ -1,6 +1,6 @@
 from datetime import UTC, timedelta
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from flask_login import current_user
 
 from .db import list_tables, table_schema
@@ -226,27 +226,71 @@ def explain():
     Checks the 24 h cache before calling NIM. On NIM failure, falls back
     to a rule-based explanation (confidence=0.3).
     """
+    from ml.inference_contract import canonical_ts
+
     from .llm import explain_anomaly
 
-    body = request.get_json(silent=True) or {}
-    table = body.get("table", "").strip()
-    metric = body.get("metric", "").strip()
-    ts = body.get("ts", "").strip()
+    if not current_user.is_authenticated and not (
+        current_app.testing and current_app.config.get("LOGIN_DISABLED")
+    ):
+        return jsonify({"error": "authentication_required"}), 401
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or any(
+        not isinstance(body.get(key), str) for key in ("table", "metric", "ts")
+    ):
+        return jsonify({"error": "table, metric and ts must be strings"}), 400
+    table, metric, ts = body["table"], body["metric"], body["ts"]
+    try:
+        ts = canonical_ts(ts)
+    except ValueError:
+        return jsonify({"error": "ts must be RFC 3339 with a timezone"}), 400
 
     if not table or not metric or not ts:
         return jsonify({"error": "table, metric and ts are required"}), 400
     if metric not in _EXPLAIN_METRICS:
         return jsonify({"error": f"metric must be one of {sorted(_EXPLAIN_METRICS)}"}), 400
 
-    cached = get_cached_explanation(table, metric, ts)
+    project_id = _current_project_id()
+    if current_user.is_authenticated and getattr(g, "current_project", None) is None:
+        return jsonify({"error": "source_forbidden"}), 403
+    cache_scope = {"project_id": project_id}
+    context = {"project_id": project_id}
+    source = body.get("source")
+    if source is not None:
+        from app.inference_adapter import AdapterError
+        from app.inference_api import authorized_source
+        from app.source_storage import metrics as source_metrics
+
+        try:
+            authorized_source(source)
+        except AdapterError as exc:
+            return jsonify({"error": exc.code}), exc.status
+        if source["table_name"] != table:
+            return jsonify({"error": "invalid_source"}), 400
+        if not source_metrics(source, metric):
+            return jsonify({"error": "table not found"}), 404
+        cache_scope.update(connection_id=source["connection_id"], schema_name=source["schema_name"])
+        context["source"] = source
+    else:
+        from sqlalchemy import text
+
+        from app.metrics_storage import get_engine
+
+        # A table with collected source identities needs an explicit source.
+        # Never silently collapse two connections into the legacy context.
+        with get_engine().connect() as conn:
+            scoped = conn.execute(text(
+                "SELECT 1 FROM metrics WHERE project_id = :pid AND table_name = :table "
+                "AND connection_id <> 'legacy-unknown' LIMIT 1"
+            ), {"pid": project_id, "table": table}).fetchone()
+        if scoped:
+            return jsonify({"error": "source_required"}), 409
+        if not _has_project_table_metrics(table, project_id):
+            return jsonify({"error": "table not found"}), 404
+    cached = get_cached_explanation(table, metric, ts, **cache_scope)
     if cached:
         return jsonify(cached)
-
-    project_id = _current_project_id()
-    if not _has_project_table_metrics(table, project_id):
-        return jsonify({"error": "table not found"}), 404
-
-    result = explain_anomaly(table, metric, ts, project_id=project_id)
+    result = explain_anomaly(table, metric, ts, **context)
     save_explanation(
         table=table,
         metric=metric,
@@ -254,6 +298,7 @@ def explain():
         explanation=result["explanation"],
         suggested_fix=result["suggested_fix"],
         confidence=result["confidence"],
+        **cache_scope,
     )
     return jsonify(result)
 

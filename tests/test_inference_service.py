@@ -1,0 +1,509 @@
+"""Actual ASGI HTTP, real artifact, Flask/session/SQLite and version isolation."""
+
+import copy
+import json
+import re
+import shutil
+import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from app import inference_adapter as adapter
+from app import metrics_storage as storage
+from app import source_storage
+from app.app import create_app as flask_app
+from inference.service import create_app
+from ml import model_registry as registry
+from ml.inference_contract import canonical_ts, document, validator
+
+SOURCE = {
+    "project_id": "project-a",
+    "connection_id": "connection-a",
+    "schema_name": "public",
+    "table_name": "orders",
+}
+TOKEN = "synthetic-test-token"
+HEADERS = {"Authorization": f"Bearer {TOKEN}"}
+
+
+@pytest.fixture(scope="module")
+def bundles(tmp_path_factory):
+    root = tmp_path_factory.mktemp("inference-registry")
+    now = datetime.now(UTC) - timedelta(days=1)
+    rc = [{"ts": (now + timedelta(minutes=i)).isoformat(), "value": 100 + i} for i in range(205)]
+    nr = [{"ts": row["ts"], "value": 0.02 + (i % 3) * 0.001} for i, row in enumerate(rc)]
+    candidates = [
+        registry.train_candidate(
+            root,
+            source=SOURCE,
+            row_counts=rc,
+            null_rates=nr,
+            git_sha="a" * 40,
+            seed=seed,
+            parameters={"n_estimators": 3},
+        )
+        for seed in (41, 42)
+    ]
+    return root, candidates
+
+
+@pytest.fixture
+def client(bundles):
+    root, _ = bundles
+    return TestClient(
+        create_app(
+            {
+                "registry_path": str(root),
+                "demo": True,
+                "principals": [{"token": TOKEN, "sources": [SOURCE]}],
+            }
+        )
+    )
+
+
+def payload(bundles, version=0):
+    result = copy.deepcopy(
+        document()["paths"]["/v1/predict"]["post"]["requestBody"]["content"]["application/json"][
+            "example"
+        ]
+    )
+    result["model_version"] = bundles[1][version]["model_version"]
+    return result
+
+
+def test_actual_predict_matches_selected_artifact_without_fit(client, bundles, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("HTTP prediction must never fit")
+
+    monkeypatch.setattr("sklearn.ensemble.IsolationForest.fit", forbidden)
+    monkeypatch.setattr("sklearn.preprocessing.StandardScaler.fit", forbidden)
+    request = payload(bundles)
+    response = client.post("/v1/predict", json=request, headers=HEADERS)
+    assert response.status_code == 200, response.text
+    validator("PredictionResponse").validate(response.json())
+    expected = registry.load_version(
+        bundles[0], request["model_version"], source=SOURCE, demo=True
+    ).predict(request["features"])
+    assert response.json() == {
+        **expected,
+        "observed_at": request["observed_at"],
+        "demo": True,
+        "quality_admitted": False,
+    }
+    model = {key: request[key] for key in ("source", "model_version", "feature_schema_version")}
+    info = client.post("/v1/model", json=model, headers=HEADERS)
+    assert info.status_code == 200
+    assert info.json()["demo"] is True
+    assert info.json()["quality_admitted"] is False
+    assert client.get("/healthz").json() == {"status": "ok", "demo": True}
+    assert client.get("/docs").status_code == 200
+    assert set(client.get("/openapi.json").json()["paths"]) == {
+        "/healthz",
+        "/v1/model",
+        "/v1/predict",
+    }
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity", "1e400", "1" + "0" * 400])
+def test_real_http_decoder_rejects_nonfinite_numbers(client, bundles, token):
+    raw = json.dumps(payload(bundles)).replace('"row_count": 110.0', f'"row_count": {token}')
+    response = client.post(
+        "/v1/predict", content=raw, headers={**HEADERS, "Content-Type": "application/json"}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_json"
+
+
+@pytest.mark.parametrize("value", ["110", True, None, -1])
+def test_real_http_types_are_not_coerced(client, bundles, value):
+    request = payload(bundles)
+    request["features"]["row_count"] = value
+    assert client.post("/v1/predict", json=request, headers=HEADERS).status_code == 422
+
+
+def test_validation_priority_and_source_scope(client, bundles):
+    assert client.post("/v1/predict", content="bad").status_code == 401
+    assert client.post("/v1/predict", content="bad", headers=HEADERS).status_code == 415
+    request = payload(bundles)
+    request["source"]["connection_id"] = "other-connection"
+    request["model_version"] = "missing"
+    assert client.post("/v1/predict", json=request, headers=HEADERS).status_code == 403
+    request["source"] = SOURCE
+    request["feature_schema_version"] = "2.0.0"
+    assert client.post("/v1/predict", json=request, headers=HEADERS).status_code == 409
+    request["feature_schema_version"] = "1.0.0"
+    assert client.post("/v1/predict", json=request, headers=HEADERS).status_code == 503
+
+
+@pytest.mark.parametrize("change", ["time", "delta", "extra", "timezone"])
+def test_cross_field_and_structural_errors(client, bundles, change):
+    request = payload(bundles)
+    if change == "time":
+        request["previous_observed_at"] = request["observed_at"]
+    elif change == "delta":
+        request["features"]["d_row_count"] = 999
+    elif change == "extra":
+        request["unexpected"] = 1
+    else:
+        request["observed_at"] = "2026-10-25T12:00:00"
+    assert client.post("/v1/predict", json=request, headers=HEADERS).status_code == 422
+
+
+def test_source_bound_model_cannot_be_reused_by_other_allowed_source(bundles):
+    other = {**SOURCE, "connection_id": "other-connection"}
+    http = TestClient(
+        create_app(
+            {
+                "registry_path": str(bundles[0]),
+                "demo": True,
+                "principals": [{"token": TOKEN, "sources": [SOURCE, other]}],
+            }
+        )
+    )
+    request = payload(bundles)
+    request["source"] = other
+    assert http.post("/v1/predict", json=request, headers=HEADERS).status_code == 503
+
+
+def test_no_positive_admission_requires_explicit_demo_mode(bundles):
+    http = TestClient(
+        create_app(
+            {
+                "registry_path": str(bundles[0]),
+                "demo": False,
+                "principals": [{"token": TOKEN, "sources": [SOURCE]}],
+            }
+        )
+    )
+    assert http.post("/v1/predict", json=payload(bundles), headers=HEADERS).status_code == 503
+
+
+def test_incompatible_verified_manifest_precedes_model_deserialization(tmp_path, bundles):
+    manifest = copy.deepcopy(bundles[1][0])
+    manifest.pop("model_version")
+    manifest["feature_schema_version"] = "2.0.0"
+    version = "if-" + registry.sha256(registry.canonical(manifest))
+    directory = tmp_path / "versions" / version
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_bytes(
+        registry.canonical({**manifest, "model_version": version})
+    )
+    http = TestClient(
+        create_app(
+            {
+                "registry_path": str(tmp_path),
+                "demo": True,
+                "principals": [{"token": TOKEN, "sources": [SOURCE]}],
+            }
+        )
+    )
+    request = payload(bundles)
+    request["model_version"] = version
+    assert http.post("/v1/predict", json=request, headers=HEADERS).status_code == 409
+    (directory / "manifest.json").write_text("{}")
+    assert http.post("/v1/predict", json=request, headers=HEADERS).status_code == 503
+
+
+def test_service_import_has_no_flask_or_scheduler_side_effects():
+    code = "import sys; from inference.service import create_app; create_app({'registry_path': '/missing', 'principals': []}); assert 'app.app' not in sys.modules; assert 'app.metrics_storage' not in sys.modules; assert 'collectors.scheduler' not in sys.modules"
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True)
+
+
+def test_cached_model_still_rejects_artifact_corruption(tmp_path, bundles, monkeypatch):
+    shutil.copytree(bundles[0], tmp_path / "registry")
+    http = TestClient(
+        create_app(
+            {
+                "registry_path": str(tmp_path / "registry"),
+                "demo": True,
+                "principals": [{"token": TOKEN, "sources": [SOURCE]}],
+            }
+        )
+    )
+    loads = []
+    original = registry._load_pipeline
+
+    def tracked(*args):
+        loads.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(registry, "_load_pipeline", tracked)
+    request = payload(bundles)
+    for _ in range(2):
+        assert http.post("/v1/predict", json=request, headers=HEADERS).status_code == 200
+    assert len(loads) == 1
+    artifact = tmp_path / "registry/versions" / request["model_version"] / "pipeline.skops"
+    artifact.write_bytes(artifact.read_bytes() + b"corruption")
+    assert http.post("/v1/predict", json=request, headers=HEADERS).status_code == 503
+
+
+@pytest.fixture
+def ui(tmp_path, monkeypatch, client, bundles):
+    monkeypatch.setattr(storage.settings, "MONITOR_DB_URL", f"sqlite:///{tmp_path / 'ui.db'}")
+    monkeypatch.setattr(storage.settings, "DATABASE_URL", "sqlite://")
+    monkeypatch.setattr(storage, "_engine", None)
+    monkeypatch.setattr(storage, "_initialized", False)
+    storage.create_user("u", "u@example.test", "unused")
+    storage.create_project(SOURCE["project_id"], "u", "A", "a")
+    storage.create_connection(
+        connection_id=SOURCE["connection_id"],
+        project_id=SOURCE["project_id"],
+        name="A",
+        dsn_encrypted=b"unused",
+    )
+    config = {
+        "url": "http://testserver",
+        "demo": True,
+        "token_env": "TEST_INFERENCE_TOKEN",
+        "bindings": [
+            {
+                "source": SOURCE,
+                "model_version": bundles[1][0]["model_version"],
+                "feature_schema_version": "1.0.0",
+            }
+        ],
+    }
+    filename = tmp_path / "adapter.json"
+    filename.write_text(json.dumps(config))
+    monkeypatch.setenv("INFERENCE_ADAPTER_CONFIG", str(filename))
+    monkeypatch.setenv("TEST_INFERENCE_TOKEN", TOKEN)
+    app = flask_app({"TESTING": True, "LOGIN_DISABLED": False, "INFERENCE_HTTP_CLIENT": client})
+    http = app.test_client()
+    with http.session_transaction() as session:
+        session["_user_id"] = "u"
+        session["_fresh"] = True
+        session["current_project_id"] = SOURCE["project_id"]
+    for metric, values in [("row_count", [100, 110]), ("null_rate", [0.02, 0.03])]:
+        storage.save_metrics(
+            [
+                {
+                    "ts": (
+                        datetime.now(UTC).replace(second=0, microsecond=0)
+                        - timedelta(minutes=15 * (2 - i))
+                    ).isoformat(),
+                    "table_name": "orders",
+                    "metric_name": metric,
+                    "value": value,
+                }
+                for i, value in enumerate(values)
+            ],
+            SOURCE["project_id"],
+            connection_id=SOURCE["connection_id"],
+            schema_name=SOURCE["schema_name"],
+        )
+    yield app, http, config
+    storage._engine.dispose()
+
+
+def test_flask_adapter_dashboard_two_versions_and_idempotence(ui, bundles):
+    app, http, config = ui
+    entry = config["bindings"][0]
+    first = http.post("/api/inference/predict", json=entry)
+    assert first.status_code == 200, first.text
+    assert http.post("/api/inference/predict", json=entry).json == first.json
+    second_entry = {**entry, "model_version": bundles[1][1]["model_version"]}
+    second = http.post("/api/inference/predict", json=second_entry)
+    assert second.status_code == 200
+    for result in [first.json, second.json]:
+        rows = source_storage.scores(
+            SOURCE, result["model_version"], result["feature_schema_version"]
+        )
+        assert len(rows) == 1
+        assert rows[0]["score"] == result["score"]
+        assert rows[0]["demo"] is True
+        query = {
+            **SOURCE,
+            "model_version": result["model_version"],
+            "feature_schema_version": "1.0.0",
+        }
+        assert http.get("/api/inference/scores", query_string=query).json == rows
+        page = http.get(
+            "/dashboard/inference", query_string={"version": result["model_version"] + "|1.0.0"}
+        )
+        assert page.status_code == 200
+        assert str(result["score"]) in page.text
+    assert http.post("/api/inference/predict", json=entry).json == first.json  # Explicit rollback.
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM anomaly_scores")).scalar() == 2
+    assert storage.get_anomaly_scores("orders", SOURCE["project_id"]) == []
+
+
+def test_flask_denies_anonymous_and_foreign_source(ui):
+    app, http, config = ui
+    entry = config["bindings"][0]
+    assert app.test_client().post("/api/inference/predict", json=entry).status_code == 401
+    foreign = {**entry, "source": {**SOURCE, "project_id": "other"}}
+    assert http.post("/api/inference/predict", json=foreign).status_code == 403
+
+
+def test_dashboard_sends_a_valid_csrf_token(ui):
+    app, http, config = ui
+    app.config["WTF_CSRF_ENABLED"] = True
+    page = http.get("/dashboard/inference")
+    token = re.search(r"'X-CSRFToken': \"([^\"]+)\"", page.text).group(1)
+    assert http.post("/api/inference/predict", json=config["bindings"][0]).status_code == 400
+    assert (
+        http.post(
+            "/api/inference/predict", json=config["bindings"][0], headers={"X-CSRFToken": token}
+        ).status_code
+        == 200
+    )
+
+
+def test_demo_result_remains_marked_after_configuration_switch(ui, monkeypatch):
+    _, http, config = ui
+    assert http.post("/api/inference/predict", json=config["bindings"][0]).status_code == 200
+    monkeypatch.setattr(adapter, "configuration", lambda: {**config, "demo": False})
+    assert "Учебная демонстрация" in http.get("/dashboard/inference").text
+    response = http.post("/api/inference/predict", json=config["bindings"][0])
+    assert response.status_code == 503
+    assert response.json["error"]["code"] == "invalid_inference_response"
+
+
+def test_missing_previous_and_duplicates_do_not_call_service(ui, monkeypatch):
+    app, http, config = ui
+    with storage.get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM metrics WHERE metric_name = 'null_rate'"))
+    response = http.post("/api/inference/predict", json=config["bindings"][0])
+    assert response.status_code == 422
+    assert response.json["error"]["code"] == "insufficient_history"
+
+
+def test_anonymous_explanation_cache_and_wrong_json_types(ui):
+    app, http, _ = ui
+    stamp = datetime.now(UTC).isoformat()
+    storage.save_explanation(
+        "orders", "row_count", stamp, "secret", "fix", 0.8, project_id=SOURCE["project_id"]
+    )
+    assert (
+        app.test_client()
+        .post("/api/explain", json={"table": "orders", "metric": "row_count", "ts": stamp})
+        .status_code
+        == 401
+    )
+    for body in [[1], {"table": 5, "metric": "row_count", "ts": stamp}]:
+        assert http.post("/api/explain", json=body).status_code == 400
+
+
+def test_cache_has_full_source_scope_and_utc_equivalent_keys(ui):
+    stamp = datetime.now(UTC).isoformat()
+    scope = {"project_id": SOURCE["project_id"], "connection_id": "a", "schema_name": "public"}
+    storage.save_explanation("orders", "row_count", stamp, "A", "fix", 0.8, **scope)
+    assert (
+        storage.get_cached_explanation("orders", "row_count", stamp, **scope)["explanation"] == "A"
+    )
+    assert (
+        storage.get_cached_explanation(
+            "orders", "row_count", stamp, **{**scope, "connection_id": "b"}
+        )
+        is None
+    )
+    assert (
+        storage.get_cached_explanation(
+            "orders", "row_count", stamp, **{**scope, "schema_name": "other"}
+        )
+        is None
+    )
+    assert (
+        storage.get_cached_explanation("orders", "row_count", stamp, ttl_hours=-1, **scope) is None
+    )
+    assert canonical_ts(stamp) == canonical_ts(
+        datetime.fromisoformat(stamp).astimezone().isoformat()
+    )
+    assert (
+        storage.get_cached_explanation(
+            "orders", "row_count", datetime.fromisoformat(stamp).astimezone().isoformat(), **scope
+        )["explanation"]
+        == "A"
+    )
+
+
+def test_scoped_llm_context_and_telegram_ambiguity(ui, monkeypatch):
+    from app import llm
+
+    _, http, config = ui
+    source_storage.save_snapshot(SOURCE, [{"name": "only_source_a", "type": "int"}])
+    storage.save_schema_snapshot("orders", [{"name": "wrong_project_snapshot", "type": "int"}])
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    prompts = []
+
+    def nim(prompt):
+        prompts.append(prompt)
+        return json.dumps({"explanation": "source A", "suggested_fix": "check", "confidence": 0.8})
+
+    monkeypatch.setattr(storage.settings, "NIM_API_KEY", "synthetic")
+    monkeypatch.setattr(llm, "_call_nim", nim)
+    # Direct explain_anomaly is also the path used by Telegram notifications.
+    assert (
+        llm.explain_anomaly("orders", "row_count", stamp, SOURCE["project_id"])["explanation"]
+        == "source A"
+    )
+    assert "only_source_a" in prompts[0]
+    assert "wrong_project_snapshot" not in prompts[0]
+    body = {"source": SOURCE, "table": "orders", "metric": "row_count", "ts": stamp}
+    assert http.post("/api/explain", json=body).status_code == 200
+    assert http.post("/api/explain", json=body).json["explanation"] == "source A"
+    assert len(prompts) == 2
+    storage.save_metrics(
+        [{"ts": stamp, "table_name": "orders", "metric_name": "row_count", "value": 999}],
+        SOURCE["project_id"],
+        connection_id="b",
+        schema_name="public",
+    )
+    ambiguous = llm.explain_anomaly("orders", "row_count", stamp, SOURCE["project_id"])
+    assert ambiguous["confidence"] == 0.3
+    assert len(prompts) == 2
+    assert (
+        http.post(
+            "/api/explain", json={key: value for key, value in body.items() if key != "source"}
+        ).status_code
+        == 409
+    )
+
+
+def test_background_scoring_uses_the_same_http_service(ui):
+    app, _, _ = ui
+    adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    with storage.get_engine().connect() as conn:
+        assert (
+            conn.execute(
+                text("SELECT COUNT(*) FROM anomaly_scores WHERE model_version <> 'legacy-unknown'")
+            ).scalar()
+            == 1
+        )
+
+
+def test_nightly_job_does_not_retrain_the_served_legacy_model(ui, monkeypatch):
+    from collectors import scheduler
+
+    calls = []
+    monkeypatch.setattr(scheduler, "_iter_retrain_projects", lambda: [SOURCE["project_id"]])
+    monkeypatch.setattr(adapter, "train_candidates", lambda pid: calls.append(("candidate", pid)))
+    monkeypatch.setattr(adapter, "score_project", lambda pid: calls.append(("score", pid)))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("served source must not retrain/score the legacy mutable model")
+
+    monkeypatch.setattr("ml.anomaly_detector.retrain_all", forbidden)
+    monkeypatch.setattr("ml.anomaly_detector.score_table", forbidden)
+    scheduler.retrain_anomaly_detectors()
+    assert calls == [("candidate", SOURCE["project_id"]), ("score", SOURCE["project_id"])]
+
+
+def test_candidate_training_failure_does_not_disable_published_scoring(ui, monkeypatch):
+    from collectors import scheduler
+
+    calls = []
+    monkeypatch.setattr(scheduler, "_iter_retrain_projects", lambda: [SOURCE["project_id"]])
+
+    def rejected(pid):
+        raise ValueError("not enough training history")
+
+    monkeypatch.setattr(adapter, "train_candidates", rejected)
+    monkeypatch.setattr(adapter, "score_project", lambda pid: calls.append(pid))
+    scheduler.retrain_anomaly_detectors()
+    assert calls == [SOURCE["project_id"]]

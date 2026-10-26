@@ -1,7 +1,7 @@
-"""Offline evidence for course #18; known isolation defects remain assigned to #12.
+"""Offline evidence for #18 and isolation regressions repaired in #12.
 
 Passing characterization tests describe observed behavior, not semantic safety.
-Strict XFAILs assert the safe isolation contract and must become XPASS on repair.
+The three original isolation XFAILs are now ordinary regression tests.
 """
 
 import json
@@ -260,11 +260,6 @@ def test_untrusted_metadata_crosses_prompt_boundary_and_round_trips(monkeypatch)
     assert "text SYNTHETIC_TYPE" in messages[0]["content"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Open #12/#18: _build_prompt reads schema from legacy, ignoring project_id",
-)
 def test_prompt_schema_must_belong_to_current_project():
     storage.save_schema_snapshot("orders", [{"name": "legacy_marker", "type": "int"}])
     storage.save_schema_snapshot(
@@ -278,11 +273,6 @@ def test_prompt_schema_must_belong_to_current_project():
 
 
 @pytest.mark.parametrize("b_has_table", [True, False], ids=["same-table", "no-access"])
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Open #12/#18: global explanation cache is returned before project/table check",
-)
 def test_explanation_cache_must_isolate_projects(monkeypatch, b_has_table):
     """Real SQLite + real project hook, two authenticated, disjoint sessions."""
     clients = []

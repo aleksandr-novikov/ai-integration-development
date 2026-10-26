@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy import bindparam, create_engine, event, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError, ProgrammingError
+from sqlalchemy.exc import IntegrityError, NotSupportedError, ProgrammingError
 
 from app.config import settings
 
@@ -95,7 +95,7 @@ def _apply_schema(engine: Engine) -> None:
         try:
             with engine.begin() as conn:
                 conn.execute(text(stmt))
-        except ProgrammingError:
+        except (ProgrammingError, NotSupportedError):
             # Tolerate failures only on the two TimescaleDB-specific
             # statements (CREATE EXTENSION timescaledb / SELECT
             # create_hypertable(...)) — those are no-ops on plain Postgres
@@ -137,7 +137,8 @@ def _table_exists(engine: Engine, table: str) -> bool:
 _PROJECT_SCOPED_ML_TABLES = {
     "anomaly_scores": {
         "columns": [
-            "project_id", "ts", "table_name", "score", "is_anomaly",
+            "project_id", "connection_id", "schema_name", "ts", "table_name",
+            "model_version", "feature_schema_version", "score", "is_anomaly", "is_demo",
         ],
         "select": (
             "'legacy' AS project_id, ts, table_name, score, is_anomaly"
@@ -145,14 +146,19 @@ _PROJECT_SCOPED_ML_TABLES = {
         "sqlite_ddl": """
             CREATE TABLE anomaly_scores__new (
                 project_id  TEXT NOT NULL DEFAULT 'legacy',
+                connection_id TEXT NOT NULL DEFAULT 'legacy-unknown',
+                schema_name TEXT NOT NULL DEFAULT 'legacy-unknown',
+                model_version TEXT NOT NULL DEFAULT 'legacy-unknown',
+                feature_schema_version TEXT NOT NULL DEFAULT 'legacy-unknown',
                 ts          TEXT NOT NULL,
                 table_name  TEXT NOT NULL,
                 score       REAL NOT NULL,
                 is_anomaly  INTEGER NOT NULL,
-                PRIMARY KEY (project_id, ts, table_name)
+                is_demo     INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (project_id, connection_id, schema_name, table_name, ts, model_version, feature_schema_version)
             )
         """,
-        "postgres_pk": ["project_id", "ts", "table_name"],
+        "postgres_pk": ["project_id", "connection_id", "schema_name", "table_name", "ts", "model_version", "feature_schema_version"],
         "indexes": [
             "CREATE INDEX IF NOT EXISTS idx_anomaly_scores_table_ts "
             "ON anomaly_scores (table_name, ts)",
@@ -318,6 +324,58 @@ def _migrate_project_scoped_ml_tables(engine: Engine) -> None:
             _migrate_postgres_project_scoped_ml_table(engine, table, spec)
         else:
             _migrate_sqlite_project_scoped_ml_table(engine, table, spec)
+
+
+def _migrate_inference_columns(engine: Engine) -> None:
+    """Preserve unowned history with explicit markers, never infer a connection."""
+    additions = {
+        "metrics": {"connection_id": "legacy-unknown", "schema_name": "legacy-unknown"},
+        "anomaly_scores": {
+            "project_id": "legacy", "connection_id": "legacy-unknown",
+            "schema_name": "legacy-unknown", "model_version": "legacy-unknown",
+            "feature_schema_version": "legacy-unknown",
+        },
+        "llm_explanations": {
+            "project_id": "legacy-unowned", "connection_id": "legacy-unknown",
+            "schema_name": "legacy-unknown",
+        },
+    }
+    for table, columns in additions.items():
+        if not _table_exists(engine, table):
+            continue
+        present = _existing_columns(engine, table)
+        with engine.begin() as conn:
+            for column, default in columns.items():
+                if column not in present:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'"
+                    ))
+            if table == "anomaly_scores" and "is_demo" not in present:
+                conn.execute(text("ALTER TABLE anomaly_scores ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0"))
+
+
+def _migrate_explanation_key(engine: Engine) -> None:
+    if not _table_exists(engine, "llm_explanations"):
+        return
+    keys = ["project_id", "connection_id", "schema_name", "table_name", "metric", "ts"]
+    spec = {
+        "columns": [*keys, "explanation", "suggested_fix", "confidence", "created_at"],
+        "postgres_pk": keys,
+        "sqlite_ddl": """CREATE TABLE llm_explanations__new (
+            project_id TEXT NOT NULL DEFAULT 'legacy-unowned',
+            connection_id TEXT NOT NULL DEFAULT 'legacy-unknown',
+            schema_name TEXT NOT NULL DEFAULT 'legacy-unknown',
+            table_name TEXT NOT NULL, metric TEXT NOT NULL, ts TEXT NOT NULL,
+            explanation TEXT NOT NULL, suggested_fix TEXT, confidence REAL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, connection_id, schema_name, table_name, metric, ts)
+        )""",
+        "indexes": [],
+    }
+    if _is_postgres():
+        _migrate_postgres_project_scoped_ml_table(engine, "llm_explanations", spec)
+    else:
+        _migrate_sqlite_project_scoped_ml_table(engine, "llm_explanations", spec)
 
 
 def _migrate_existing_schema(engine: Engine) -> None:
@@ -495,7 +553,9 @@ def _migrate_existing_schema(engine: Engine) -> None:
                 ", ".join(name for name, _ in missing_probe_cols),
             )
 
+    _migrate_inference_columns(engine)
     _migrate_project_scoped_ml_tables(engine)
+    _migrate_explanation_key(engine)
 
     # #172: backfill project_members for projects that existed before
     # shared-access landed. Every legacy project's user_id becomes the
@@ -573,7 +633,10 @@ def _normalize_ts(value: Any) -> str | None:
     return str(value)
 
 
-def save_metrics(rows: Iterable[dict], project_id: str) -> int:
+def save_metrics(
+    rows: Iterable[dict], project_id: str, *, connection_id: str = "legacy-unknown",
+    schema_name: str = "legacy-unknown",
+) -> int:
     """Insert a batch of metrics scoped to ``project_id`` (#53).
 
     Each row: {ts, table_name, metric_name, value, tags?}. The project_id
@@ -584,10 +647,17 @@ def save_metrics(rows: Iterable[dict], project_id: str) -> int:
     payload = []
     for r in rows:
         tags = r.get("tags")
+        stamp = _iso(r["ts"])
+        if connection_id != "legacy-unknown":
+            from ml.inference_contract import canonical_ts
+
+            stamp = canonical_ts(stamp)
         payload.append(
             {
                 "project_id": project_id,
-                "ts": _iso(r["ts"]),
+                "connection_id": connection_id,
+                "schema_name": schema_name,
+                "ts": stamp,
                 "table_name": r["table_name"],
                 "metric_name": r["metric_name"],
                 "value": float(r["value"]),
@@ -597,8 +667,8 @@ def save_metrics(rows: Iterable[dict], project_id: str) -> int:
     if not payload:
         return 0
     stmt = text("""
-        INSERT INTO metrics (project_id, ts, table_name, metric_name, value, tags)
-        VALUES (:project_id, :ts, :table_name, :metric_name, :value, :tags)
+        INSERT INTO metrics (project_id, connection_id, schema_name, ts, table_name, metric_name, value, tags)
+        VALUES (:project_id, :connection_id, :schema_name, :ts, :table_name, :metric_name, :value, :tags)
     """)
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
@@ -932,15 +1002,20 @@ def save_anomaly_scores(rows: Iterable[dict], project_id: str = "legacy") -> int
             "project_id": project_id,
             "ts": _iso(r["ts"]),
             "table_name": r["table_name"],
+            "connection_id": r.get("connection_id", "legacy-unknown"),
+            "schema_name": r.get("schema_name", "legacy-unknown"),
+            "model_version": r.get("model_version", "legacy-unknown"),
+            "feature_schema_version": r.get("feature_schema_version", "legacy-unknown"),
             "score": float(r["score"]),
             "is_anomaly": int(r["is_anomaly"]),
+            "is_demo": int(bool(r.get("demo", False))),
         })
     if not payload:
         return 0
     stmt = text(_upsert_sql(
         "anomaly_scores",
-        ["project_id", "ts", "table_name", "score", "is_anomaly"],
-        conflict_columns=["project_id", "ts", "table_name"],
+        ["project_id", "connection_id", "schema_name", "ts", "table_name", "model_version", "feature_schema_version", "score", "is_anomaly", "is_demo"],
+        conflict_columns=["project_id", "connection_id", "schema_name", "table_name", "ts", "model_version", "feature_schema_version"],
     ))
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
@@ -959,6 +1034,10 @@ def get_anomaly_scores(
         FROM anomaly_scores
         WHERE project_id = :project_id
           AND table_name = :t
+          AND model_version = 'legacy-unknown'
+          AND feature_schema_version = 'legacy-unknown'
+          AND connection_id = 'legacy-unknown'
+          AND schema_name = 'legacy-unknown'
           AND ts >= :since
         ORDER BY ts
     """)
@@ -1178,7 +1257,7 @@ def _fetch_anomalies_by_ts(
 ) -> dict[str, int]:
     """Count IF anomalies per collector tick within the window."""
     params: dict[str, Any] = {"project_id": project_id}
-    where = "WHERE project_id = :project_id AND is_anomaly = 1"
+    where = "WHERE project_id = :project_id AND is_anomaly = 1 AND model_version = 'legacy-unknown' AND feature_schema_version = 'legacy-unknown'"
     if window is not None:
         params["since"] = (datetime.now(UTC) - window).isoformat()
         where += " AND ts >= :since"
@@ -1739,17 +1818,27 @@ def count_notifications(
 # --- LLM explanation cache (#36) ---
 
 def get_cached_explanation(
-    table: str, metric: str, ts: str, ttl_hours: int = 24
+    table: str, metric: str, ts: str, ttl_hours: int = 24, *,
+    project_id: str = "legacy", connection_id: str = "legacy-unknown",
+    schema_name: str = "legacy-unknown",
 ) -> dict | None:
     """Return a cached LLM explanation if it exists and is within TTL, else None."""
+    from ml.inference_contract import canonical_ts
+
+    ts = canonical_ts(ts)
     stmt = text("""
         SELECT explanation, suggested_fix, confidence, created_at
         FROM llm_explanations
         WHERE table_name = :table AND metric = :metric AND ts = :ts
+          AND project_id = :project_id AND connection_id = :connection_id
+          AND schema_name = :schema_name
         LIMIT 1
     """)
     with get_engine().connect() as conn:
-        row = conn.execute(stmt, {"table": table, "metric": metric, "ts": ts}).fetchone()
+        row = conn.execute(stmt, {
+            "table": table, "metric": metric, "ts": ts, "project_id": project_id,
+            "connection_id": connection_id, "schema_name": schema_name,
+        }).fetchone()
     if not row:
         return None
     raw_created = row[3]
@@ -1776,17 +1865,25 @@ def save_explanation(
     explanation: str,
     suggested_fix: str,
     confidence: float,
+    *, project_id: str = "legacy", connection_id: str = "legacy-unknown",
+    schema_name: str = "legacy-unknown",
 ) -> None:
     """Upsert an LLM explanation into the cache."""
+    from ml.inference_contract import canonical_ts
+
+    ts = canonical_ts(ts)
     sql = _upsert_sql(
         "llm_explanations",
-        ["table_name", "metric", "ts", "explanation",
+        ["project_id", "connection_id", "schema_name", "table_name", "metric", "ts", "explanation",
          "suggested_fix", "confidence", "created_at"],
-        conflict_columns=["table_name", "metric", "ts"],
+        conflict_columns=["project_id", "connection_id", "schema_name", "table_name", "metric", "ts"],
     )
     with get_engine().begin() as conn:
         conn.execute(text(sql), {
             "table_name": table,
+            "project_id": project_id,
+            "connection_id": connection_id,
+            "schema_name": schema_name,
             "metric": metric,
             "ts": ts,
             "explanation": explanation,

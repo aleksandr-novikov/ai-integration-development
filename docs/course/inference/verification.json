@@ -1,0 +1,143 @@
+{
+  "task": 12,
+  "recorded_at_utc": "2026-10-26T00:53:31+00:00",
+  "branch": "course/inference-service",
+  "master_base": "6ffaa6b2f7d5b41e92d7174898b4e06554fb871e",
+  "dependency": {
+    "pr": 37,
+    "commit": "686ffa2a81f667edd3228e8e694e4ed73b956123",
+    "state_at_preparation": "approved; not merged"
+  },
+  "prepared_from_merge_commit": "d15962bb9b0cb3f064dbb45f496fb8557f040b66",
+  "python": "3.12.7",
+  "packages": {
+    "fastapi": "0.162.0",
+    "starlette": "1.10.0",
+    "uvicorn": "0.49.0",
+    "scikit-learn": "1.6.1",
+    "skops": "0.16.0",
+    "jsonschema": "4.23.0",
+    "pytest": "8.3.4",
+    "ruff": "0.9.4",
+    "playwright": "1.50.0",
+    "SQLAlchemy": "2.0.49",
+    "psycopg2-binary": "2.9.11"
+  },
+  "checks": [
+    {
+      "command": "PATH=<venv>/bin:$PATH DATABASE_URL=postgresql://test:test@localhost/test MONITOR_DB_URL=sqlite:////private/tmp/issue12-test.db NIM_API_KEY='' SENTRY_DSN='' ADMIN_EMAIL='' python -m pytest -q --tb=short --junitxml=/private/tmp/issue12-final-tests.xml",
+      "passed": 1272,
+      "failures": 0,
+      "errors": 0,
+      "duration_seconds": 135.812,
+      "deselected": 49
+    },
+    {
+      "command": "python -m pytest -q tests/test_inference_service.py --tb=short",
+      "passed": 31,
+      "duration_seconds": 9.02,
+      "note": "Final 31-test service profile includes the two tests added after the 1272-test full run: real CSRF token and scoring after candidate-training failure. Only documentation, comments, Docker COPY and code formatting changed afterward."
+    },
+    {
+      "command": "DOCKER_HOST=unix://<local-docker-socket> python -m pytest -q -m integration tests/integration/test_inference_migration.py",
+      "passed": 1,
+      "failures": 0,
+      "duration_seconds": 5.52,
+      "backend": "real temporary postgres:16-alpine"
+    },
+    {
+      "command": "PLAYWRIGHT_BROWSERS_PATH=/private/tmp/issue12-browser python -m scripts.inference_smoke --output docs/course/inference/evidence --swagger",
+      "result": "Three actual Swagger Execute requests returned 200; 100 sequential localhost HTTP predictions succeeded, no failures. Raw requests/responses/timings and hardware are in evidence/smoke.json."
+    },
+    {
+      "command": "python -m openapi_spec_validator docs/course/api/legacy.openapi.yaml",
+      "result": "OK"
+    },
+    {
+      "command": "python -m openapi_spec_validator docs/course/api/inference.openapi.yaml",
+      "result": "OK"
+    },
+    {
+      "command": "ruff check .",
+      "result": "passed"
+    },
+    {
+      "command": "python -m pip check",
+      "result": "No broken requirements found"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "self_review_before_pr": {
+    "scope": "Source/token access; strict JSON and cross-field validation; model/scaler/manifest integrity including cache hits; SQLite/PostgreSQL migration and legacy markers; versioned adapter/dashboard/background parity; LLM cache/prompt isolation; documentation and Swagger execution.",
+    "findings_fixed": [
+      "Plain PostgreSQL reports an unavailable optional Timescale extension as NotSupportedError; only optional extension/hypertable statements are tolerated.",
+      "Repeated model deserialization made warm p95 about 197 ms. Bounded verified-model cache preserves per-request manifest/artifact checksum checks; corruption still returns 503.",
+      "Swagger must use its current origin instead of a hard-coded port; actual browser execution verified all three routes.",
+      "Demo provenance must survive configuration changes; result mode is stored and the adapter rejects mismatched server mode.",
+      "Failure to train an optional candidate must not suppress inference by the already published model.",
+      "Legacy table-level scoring cannot distinguish same-name connections; it is disabled for that name when explicitly using new bindings, and this limitation is documented."
+    ],
+    "prior_llm_xfails": "All three original strict XFAILs from #18 are now ordinary passing regressions; semantic LLM safety is not claimed."
+  },
+  "warnings": [
+    "Existing joblib/NumPy deprecations, Starlette/httpx test-client deprecation, WTForms, Sentry and in-memory limiter notices remain visible."
+  ],
+  "not_run": [
+    "complete local Docker integration matrix beyond PostgreSQL migration",
+    "application Docker image build/Compose deployment (#13)",
+    "real NIM/Telegram",
+    "migration of a production database",
+    "availability over a period or latency on the proposed 2-vCPU/4-GiB SLA profile"
+  ],
+  "files_sha256": {
+    "Dockerfile": "dc1c45a109788401ef15ba660451c719813dfd27acd012b13884ba6b22da56f5",
+    "README.md": "468264a2dd54b772be5e520285e167b801c2ca166a73b8e1b5b16843ca5295a9",
+    "app/api.py": "c817b8fed030b25053cdc6665320c63f9276ca4351957d83b75c066e5c95010d",
+    "app/app.py": "9f7289bff1e67c511f97df42ca5c2ae4a0dbfd6dd99c665e6da041f0c000ef9a",
+    "app/dashboard.py": "2fb765236f6fbc369ddc71cec85e7f4daacf18c0b7ef84095a1847e6de43be6e",
+    "app/inference_adapter.py": "e7775b4ecb4d07360f295c0297fddfa290236bdb416e198b5bf03669e38d0240",
+    "app/inference_api.py": "3b83cb4ae0083763d9a6bd3ea9b32cd2843ee265b71bae72ccdd898ff2570000",
+    "app/llm.py": "1aac3cad97457f7796ad03523e3b1858de279e3159419cd632dc9e8d3e02db8d",
+    "app/metrics_storage.py": "302846b09aa8f0b3d5ed803dbf9b16e70d09409b981998299a3943eed3467c39",
+    "app/source_storage.py": "87deec387962f9815aec9f4498b13739590ff0b89e75020b685e527fdfaba3ad",
+    "collectors/per_project.py": "43c0729845dd9833cb0369a2e86507054f17226195bd8f000b8d0d596945bd14",
+    "collectors/scheduler.py": "08a0ffe14b1c4e7fc79b10254a49482dc059d4dd4b0faa125190a3e268844563",
+    "collectors/schema_collector.py": "fd2cdca1c054cb640b4f9186a823b38c6a56520ef98c92d3bd66daa0765fe709",
+    "docs/Architecture.md": "edddf09fdbd86ff323906285e8e441878fc83a035393c14097c332def7bd761c",
+    "docs/adr/001-flask-and-inference-service.md": "20f7eaf97d6bf8d7aab3d7fc7440d3c0759a57484504564e53f891b38239d4ce",
+    "docs/course/LLM_LIMITATIONS.md": "06c7a787c7b71f55ca982ccf06bd7f9620e117c84d76440d2b39b4b11211eed2",
+    "docs/course/api/README.md": "8fdfd7f59f253074e62f4333c4016246bb4e70c18d405d4070d7e50deb37bfd5",
+    "docs/course/api/inference.openapi.yaml": "62d8bb7bb51675373c31c26c0612ca8dabcb09cf11d76351a7804d9d06d76618",
+    "docs/course/inference/README.md": "c96b9d88be8cbc77511ccc6b017ea8e3eed210a11bccef3f6641cfde74c52167",
+    "docs/course/inference/adapter.example.json": "c3ee22f5cabbfab496af6424522dab40790c01591024d3a7fb90596cd821b915",
+    "docs/course/inference/evidence/smoke.json": "4b841d2c238e8174b92d75d5a24d10e4928abafc7adb1486489dfe561e3d2055",
+    "docs/course/inference/evidence/swagger-health.png": "eeae497f9daef09bccc01cde3f21d3e4c4962396d4d0bfcbde31cd0f472d5f1d",
+    "docs/course/inference/evidence/swagger-inspectModel.png": "78e2707085336abe2ab05e975338ee5c4677f103a475860754ee2e11f2da2751",
+    "docs/course/inference/evidence/swagger-predictAnomaly.png": "986272ca9d89b5c4e10a2e3c096ab69077dfe09575d9950ca8913eca5d93d4f1",
+    "docs/course/inference/service.example.json": "6a28af8a3d0d87788093bb04c594380278c4899cc18a8b65a820071b220e4038",
+    "docs/course/inference/source.example.json": "9daa2a62e29b08f43cccee8dbd11df68701aa581a1184417788f16a8f2ce002b",
+    "inference/__init__.py": "e2d1abbd320c167a4f1de7f8f5c54140f1efdc320406c206614ed9b480c7810a",
+    "inference/service.py": "7662cb50fee74c38c1dc8f43e1389feb59205ddd56a1f306cacc0c65658d0081",
+    "ml/inference_contract.py": "9f2865a5e96586e9d3eefe321d95992ffabaa954e735a912ea749b14518f5baf",
+    "ml/model_registry.py": "a08d15f1a0645f818fb596171bc619c153b057da691304da5d8689733e8aeda5",
+    "requirements-inference.txt": "8c0eb02da752d486e31665a4fa2b64cde949f49aebc744665b2e87efbc18b853",
+    "requirements.txt": "392233ce4b60c851b212ea51c97b7d049facbf378d272c034f4fafaf513f7127",
+    "scripts/inference_smoke.py": "87d350c7acd02285477f9bbe0268eed7fdb0039da84076c4c23f7928909d5c3d",
+    "scripts/metrics_schema.sql": "ed007b3bcb28818e1ea1456c22ee2916953fed849e332401ced88e0e94cff29a",
+    "scripts/migrate_metrics_to_timescale.py": "0104d83439535acf788b469e55e67e0a9d499383bd90ef9006e048bd1739d252",
+    "scripts/timescale_schema.sql": "0f18812ec51b5199a01f9c1e349cc68aaa229ea441c7bde4eb22d7b2cc3541aa",
+    "templates/base.html": "8dbd377552ea4e6fd92574ca71ec124582cdc7ce5e4e7771626087d1d20edfbb",
+    "templates/inference.html": "8aa458ae467ba5d6c0d0f6699decdc75217dbf82c75b5992f05bcba6d0f7771f",
+    "templates/table_detail.html": "d09447d1d0e5aea98b8a941cdcc60ba9728492b319ffb58d8461c5741ab0a862",
+    "tests/integration/test_inference_migration.py": "818ffa547ba00488cf2e00b1858c8f16aba061459118843f02bd961ec2422b5b",
+    "tests/test_inference_migration.py": "26e733f0488b963ddd022b282de971378b5e7022cfc869e18b8a342b29044713",
+    "tests/test_inference_service.py": "6ddceead9e6ee3ce219d5a4c66b363d0281287b04b2387d9ee08fbbd7838be84",
+    "tests/test_llm.py": "a935462d78fed4ee57afb3f1b3f941136c564d00b4f80dc46e66f9eb88396602",
+    "tests/test_llm_audit.py": "c9480cf07502dcf72d8e3e29ca879096a28cb3a4d6a95f532c56671eaf8b7863",
+    "tests/test_metrics_storage.py": "fc4d3bf0ccc6cfc568ab1b7fdf8d983908b8067452521d42c3ea71e488ded1d8",
+    "tests/test_openapi_contract.py": "dfcbe1fb6376435c691a51fc1b61ec064b2ee25a6f6ec7048c5f14e68fa2d297"
+  }
+}

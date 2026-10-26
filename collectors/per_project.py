@@ -529,13 +529,17 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
                         if row_count_metric is not None:
                             rows_observed = int(row_count_metric["value"])
                         if metrics:
-                            rows_saved += save_metrics(metrics, project_id)
+                            rows_saved += save_metrics(
+                                metrics, project_id, connection_id=connection_id, schema_name=ns,
+                            )
                         try:
                             _run_with_timeout(
                                 collect_table_schema,
                                 table_name,
                                 schema=ns,
                                 project_id=project_id,
+                                source={"project_id": project_id, "connection_id": connection_id,
+                                        "schema_name": ns, "table_name": table_name},
                             )
                         except TimeoutError:
                             degraded = True
@@ -779,6 +783,14 @@ def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:
     on the fly. ``InsufficientDataError`` is the "we don't have enough
     history yet" signal, treated as silent skip.
     """
+    from app.inference_adapter import is_served, score_project
+
+    if any(is_served(project_id, name) for name in table_names):
+        try:
+            score_project(project_id)
+        except Exception:
+            logger.exception("[project=%s] published inference failed", project_id)
+        table_names = [name for name in table_names if not is_served(project_id, name)]
     cfg = _load_telegram_config(project_id)
     if cfg is None:
         logger.debug(

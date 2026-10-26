@@ -84,21 +84,28 @@ def _format_history_block(
 
 
 def _build_prompt(
-    table: str, metric: str, ts: str, project_id: str = "legacy"
+    table: str, metric: str, ts: str, project_id: str = "legacy", *, source=None,
 ) -> str:
-    schema = get_schema_snapshot(table) or []
+    if source is None:
+        schema = get_schema_snapshot(table, project_id=project_id) or []
+    else:
+        from app.source_storage import snapshot
+
+        schema = snapshot(source) or []
     schema_text = ", ".join(
         f"{c['name']} {c['type']}{'?' if c.get('nullable') else ''}"
         for c in schema
     ) or "unknown"
 
     window = _context_window(ts)
-    recent_rc = get_metrics(table, "row_count", project_id, window=window)
-    recent_nr = get_metrics(table, "null_rate", project_id, window=window)
-    changepoints = get_changepoints(
+    recent_rc = _context_metrics(table, "row_count", project_id, window, source)
+    recent_nr = _context_metrics(table, "null_rate", project_id, window, source)
+    # Existing change-points/scores lack a complete source key. Do not mix
+    # their project-wide values into a scoped source's prompt.
+    changepoints = [] if source is not None else get_changepoints(
         table, window=max(timedelta(days=14), window), project_id=project_id
     )
-    anomaly_scores = get_anomaly_scores(table, project_id=project_id, window=window)
+    anomaly_scores = [] if source is not None else get_anomaly_scores(table, project_id=project_id, window=window)
 
     # Limit context to rows at or before ts so the LLM sees the state
     # at the moment of the anomaly, not current state.
@@ -247,13 +254,21 @@ def _parse_nim_response(raw: str) -> dict:
     }
 
 
+def _context_metrics(table, metric, project_id, window, source):
+    if source is None:
+        return get_metrics(table, metric, project_id, window=window)
+    from app.source_storage import metrics
+
+    return metrics(source, metric, window)
+
+
 def _rule_based_explain(
-    table: str, metric: str, ts: str, project_id: str = "legacy"
+    table: str, metric: str, ts: str, project_id: str = "legacy", *, source=None,
 ) -> dict:
     """Template fallback when NIM is unavailable. confidence=0.3."""
     window = _context_window(ts)
-    all_rc = get_metrics(table, "row_count", project_id, window=window)
-    all_nr = get_metrics(table, "null_rate", project_id, window=window)
+    all_rc = _context_metrics(table, "row_count", project_id, window, source)
+    all_nr = _context_metrics(table, "null_rate", project_id, window, source)
 
     # Use only rows up to and including ts so the comparison reflects
     # conditions at the moment of the anomaly, not current state.
@@ -317,23 +332,34 @@ def _rule_based_explain(
 
 
 def explain_anomaly(
-    table: str, metric: str, ts: str, project_id: str = "legacy"
+    table: str, metric: str, ts: str, project_id: str = "legacy", *, source=None,
 ) -> dict:
     """Orchestrate LLM explanation with cache bypass (cache handled in the API layer).
 
     Returns {explanation, suggested_fix, confidence}.
-    Never raises — falls back to rule-based on any NIM failure.
+    NIM failures fall back to rules; storage failures can still propagate.
     """
+    if source is None:
+        from app.source_storage import context_source
+
+        try:
+            source = context_source(project_id, table)
+        except ValueError:
+            return {"explanation": "Источник данных неоднозначен или недоступен. Требуется ручная проверка.",
+                    "suggested_fix": "Выберите подключение и схему таблицы.", "confidence": 0.3}
+    kwargs = {"project_id": project_id}
+    if source is not None:
+        kwargs["source"] = source
     if not settings.NIM_API_KEY:
-        return _rule_based_explain(table, metric, ts, project_id=project_id)
+        return _rule_based_explain(table, metric, ts, **kwargs)
 
     try:
-        prompt = _build_prompt(table, metric, ts, project_id=project_id)
+        prompt = _build_prompt(table, metric, ts, **kwargs)
         raw = _call_nim(prompt)
         parsed = _parse_nim_response(raw)
         if parsed:
             return parsed
         # JSON parsing failed — use rule-based
-        return _rule_based_explain(table, metric, ts, project_id=project_id)
+        return _rule_based_explain(table, metric, ts, **kwargs)
     except Exception:
-        return _rule_based_explain(table, metric, ts, project_id=project_id)
+        return _rule_based_explain(table, metric, ts, **kwargs)
