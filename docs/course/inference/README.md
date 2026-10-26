@@ -23,7 +23,7 @@ python -m scripts.model_versions --registry models/registry stage-export \
 обычный сервис с `demo=false` принимает только положительно допущенные модели.
 
 ```bash
-export INFERENCE_ADAPTER_TOKEN='ваш-локальный-секрет'
+export INFERENCE_ADAPTER_TOKEN="$(openssl rand -hex 32)"
 export INFERENCE_CONFIG=docs/course/inference/service.example.json
 python -m uvicorn inference.service:create_app --factory --host 127.0.0.1 --port 8000
 ```
