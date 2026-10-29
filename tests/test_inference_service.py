@@ -507,3 +507,306 @@ def test_candidate_training_failure_does_not_disable_published_scoring(ui, monke
     monkeypatch.setattr(adapter, "score_project", lambda pid: calls.append(pid))
     scheduler.retrain_anomaly_detectors()
     assert calls == [SOURCE["project_id"]]
+
+
+@pytest.fixture
+def two_sources(ui, monkeypatch, bundles):
+    """First binding is independent of the existing published source."""
+    app, _, config = ui
+    other = {**SOURCE, "connection_id": "connection-b"}
+    storage.create_connection(
+        connection_id=other["connection_id"],
+        project_id=other["project_id"],
+        name="B",
+        dsn_encrypted=b"unused",
+    )
+    for metric in ("row_count", "null_rate"):
+        storage.save_metrics(
+            [
+                {**row, "table_name": "orders", "metric_name": metric}
+                for row in source_storage.metrics(SOURCE, metric)
+            ],
+            other["project_id"],
+            connection_id=other["connection_id"],
+            schema_name="public",
+        )
+    now = datetime.now(UTC) - timedelta(days=1)
+    rc = [{"ts": (now + timedelta(minutes=i)).isoformat(), "value": 100 + i} for i in range(205)]
+    nr = [{"ts": row["ts"], "value": 0.02} for row in rc]
+    candidate = registry.train_candidate(
+        bundles[0],
+        source=other,
+        row_counts=rc,
+        null_rates=nr,
+        git_sha="a" * 40,
+        parameters={"n_estimators": 3},
+    )
+    first = {**config["bindings"][0], "source": other, "model_version": candidate["model_version"]}
+    config["bindings"].insert(0, first)
+    monkeypatch.setattr(adapter, "configuration", lambda: config)
+    app.config["INFERENCE_HTTP_CLIENT"] = TestClient(
+        create_app(
+            {
+                "registry_path": str(bundles[0]),
+                "demo": True,
+                "principals": [{"token": TOKEN, "sources": [SOURCE, other]}],
+            }
+        )
+    )
+    return app, config, first
+
+
+def test_source_failure_does_not_block_other_published_model(two_sources, caplog):
+    app, config, first = two_sources
+    # A real ASGI 503 for an absent artifact, followed by a source with a real model.
+    first["model_version"] = "missing"
+    before = copy.deepcopy(config)
+    adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    healthy = config["bindings"][1]
+    assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1
+    assert source_storage.versions(first["source"]) == []
+    assert config == before  # A failure must never select a different serving model.
+    assert "connection-b" in caplog.text
+    assert "model_unavailable" in caplog.text
+    assert "project-a" in caplog.text and "public" in caplog.text and "orders" in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["metrics", "features"])
+def test_source_history_failure_is_isolated(two_sources, monkeypatch, caplog, failure):
+    from sqlalchemy.exc import OperationalError
+
+    app, config, first = two_sources
+    original = source_storage.metrics
+
+    def broken(source, metric, *args, **kwargs):
+        if source == first["source"]:
+            if failure == "metrics":
+                raise OperationalError("SELECT", {}, Exception("unavailable"))
+            return [
+                {"ts": "2026-10-01T00:00:00Z", "value": "bad"},
+                {"ts": "2026-10-01T00:15:00Z", "value": 100},
+            ]
+        return original(source, metric, *args, **kwargs)
+
+    monkeypatch.setattr(source_storage, "metrics", broken)
+    adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    assert source_storage.versions(first["source"]) == []
+    assert len(source_storage.scores(SOURCE, config["bindings"][1]["model_version"], "1.0.0")) == 1
+    assert "connection-b" in caplog.text
+
+
+def test_two_healthy_connections_are_isolated_and_idempotent(two_sources):
+    app, config, _ = two_sources
+    for _ in range(2):
+        adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    for entry in config["bindings"]:
+        rows = source_storage.scores(entry["source"], entry["model_version"], "1.0.0")
+        assert len(rows) == 1
+        assert rows[0]["source"] == entry["source"]
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM anomaly_scores")).scalar() == 2
+
+
+def test_source_outage_keeps_existing_versions(two_sources):
+    app, config, first = two_sources
+    adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    previous = [
+        source_storage.scores(e["source"], e["model_version"], "1.0.0") for e in config["bindings"]
+    ]
+    first["model_version"] = "missing"
+    adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    for entry, rows in zip(config["bindings"], previous, strict=True):
+        assert source_storage.scores(entry["source"], rows[0]["model_version"], "1.0.0") == rows
+    assert source_storage.scores(first["source"], "missing", "1.0.0") == []
+
+
+@pytest.mark.parametrize("error", [RuntimeError("bug"), MemoryError("out of memory")])
+def test_system_errors_are_not_suppressed(two_sources, monkeypatch, error):
+    app, _, _ = two_sources
+
+    def broken(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(source_storage, "metrics", broken)
+    with pytest.raises(type(error), match=str(error)):
+        adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+
+
+def test_unexpected_prediction_value_error_is_not_suppressed(two_sources, monkeypatch):
+    app, _, _ = two_sources
+
+    def broken(*args, **kwargs):
+        raise ValueError("unexpected prediction bug")
+
+    monkeypatch.setattr(adapter, "predict", broken)
+    with pytest.raises(ValueError, match="unexpected prediction bug"):
+        adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+
+
+def duplicate_observation(source, metric):
+    """Different textual timestamps can represent one canonical observation."""
+    stamp = source_storage.metrics(source, metric)[-1]["ts"]
+    equivalent = datetime.fromisoformat(stamp.replace("Z", "+00:00")).strftime(
+        "%Y-%m-%dT%H:%M:%S.000000+00:00"
+    )
+    with storage.get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO metrics (project_id, connection_id, schema_name, table_name, "
+                "metric_name, ts, value) VALUES (:project_id, :connection_id, :schema_name, "
+                ":table_name, :metric, :ts, 999)"
+            ),
+            {**source, "metric": metric, "ts": equivalent},
+        )
+    return stamp
+
+
+@pytest.mark.parametrize("metric", ["row_count", "null_rate"])
+def test_duplicate_metrics_returns_conflict(ui, metric):
+    app, http, config = ui
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    duplicate_observation(SOURCE, metric)
+    response = http.get("/api/inference/metrics", query_string={**SOURCE, "metric": metric})
+    assert response.status_code == 409
+    assert response.json == {"error": {"code": "ambiguous_source", "message": "ambiguous_source"}}
+    response = http.post("/api/inference/predict", json=config["bindings"][0])
+    assert response.status_code == 409
+    assert response.json["error"]["code"] == "ambiguous_source"
+
+
+@pytest.mark.parametrize("metric", ["row_count", "null_rate"])
+def test_explanation_conflict_precedes_cache_and_llm(ui, monkeypatch, metric):
+    from app import api, llm
+
+    app, http, _ = ui
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    stamp = duplicate_observation(SOURCE, metric)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("ambiguous history must not read/write cache or call LLM")
+
+    monkeypatch.setattr(api, "get_cached_explanation", forbidden)
+    monkeypatch.setattr(api, "save_explanation", forbidden)
+    monkeypatch.setattr(llm, "_call_nim", forbidden)
+    monkeypatch.setattr(llm, "explain_anomaly", forbidden)
+    response = http.post(
+        "/api/explain",
+        json={
+            "source": SOURCE,
+            "table": "orders",
+            "metric": "row_count",
+            "ts": stamp,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json == {"error": "ambiguous_source"}
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM llm_explanations")).scalar() == 0
+
+
+@pytest.mark.parametrize("route", ["metrics", "explain"])
+def test_history_authorization_precedes_conflict(ui, monkeypatch, route):
+    app, http, _ = ui
+    stamp = duplicate_observation(SOURCE, "row_count")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("unauthorized request must not read protected history")
+
+    monkeypatch.setattr(source_storage, "metrics", forbidden)
+    foreign_sources = [
+        {**SOURCE, "project_id": "foreign-project", "connection_id": "foreign-project-connection"},
+        {**SOURCE, "connection_id": "foreign-connection"},
+        {**SOURCE, "schema_name": "foreign-schema"},
+    ]
+    for client, source, expected in [
+        (app.test_client(), SOURCE, 401),
+        *[(http, s, 403) for s in foreign_sources],
+    ]:
+        if route == "metrics":
+            response = client.get("/api/inference/metrics", query_string=source)
+        else:
+            response = client.post(
+                "/api/explain",
+                json={
+                    "source": source,
+                    "table": "orders",
+                    "metric": "row_count",
+                    "ts": stamp,
+                },
+            )
+        assert response.status_code == expected
+        assert "ambiguous_source" not in response.text
+        assert "999" not in response.text
+
+
+def test_conflict_does_not_cross_connection_or_project(two_sources, ui, monkeypatch):
+    from app import llm
+
+    _, http, _ = ui
+    _, _, first = two_sources
+    duplicate_observation(first["source"], "row_count")
+    # Same connection/schema/table strings in another project also stay isolated.
+    foreign = {**SOURCE, "project_id": "foreign-project"}
+    storage.save_metrics(
+        [
+            {"ts": row["ts"], "value": 999, "table_name": "orders", "metric_name": "row_count"}
+            for row in source_storage.metrics(SOURCE, "row_count")
+        ],
+        foreign["project_id"],
+        connection_id=foreign["connection_id"],
+        schema_name="public",
+    )
+    duplicate_observation(foreign, "row_count")
+    response = http.get("/api/inference/metrics", query_string=SOURCE)
+    assert response.status_code == 200
+    assert [r["value"] for r in response.json] == [100, 110]
+    # The GET contract uses the session's project, never a caller's query project.
+    assert http.get("/api/inference/metrics", query_string=foreign).json == response.json
+    monkeypatch.setattr(
+        llm,
+        "explain_anomaly",
+        lambda *a, **kw: {
+            "explanation": "healthy",
+            "suggested_fix": "check",
+            "confidence": 0.8,
+        },
+    )
+    response = http.post(
+        "/api/explain",
+        json={
+            "source": SOURCE,
+            "table": "orders",
+            "metric": "row_count",
+            "ts": response.json[-1]["ts"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json["explanation"] == "healthy"
+    assert http.get("/api/inference/metrics", query_string=first["source"]).status_code == 409
+
+
+@pytest.mark.parametrize("route", ["metrics", "explain", "predict"])
+def test_unknown_value_error_is_not_an_ambiguity(ui, monkeypatch, route):
+    app, http, config = ui
+
+    def broken(*args, **kwargs):
+        raise ValueError("unexpected internal failure")
+
+    monkeypatch.setattr(source_storage, "metrics", broken)
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    if route == "metrics":
+        response = http.get("/api/inference/metrics", query_string=SOURCE)
+    elif route == "predict":
+        response = http.post("/api/inference/predict", json=config["bindings"][0])
+    else:
+        response = http.post(
+            "/api/explain",
+            json={
+                "source": SOURCE,
+                "table": "orders",
+                "metric": "row_count",
+                "ts": datetime.now(UTC).isoformat(),
+            },
+        )
+    assert response.status_code == 500
+    assert "ambiguous_source" not in response.text

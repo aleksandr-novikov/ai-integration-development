@@ -14,6 +14,10 @@ SCORE_KEY = [*SOURCE_KEY, "ts", "model_version", "feature_schema_version"]
 CACHE_KEY = [*SOURCE_KEY, "metric", "ts"]
 
 
+class AmbiguousSourceError(ValueError):
+    """Several stored observations resolve to the same source/metric/time."""
+
+
 def source_params(source):
     return validate_source(source)
 
@@ -81,7 +85,7 @@ def metrics(source, metric, window=timedelta(days=30)):
     for ts, value in rows:
         stamp = canonical_ts(ts.isoformat() if isinstance(ts, datetime) else ts)
         if stamp in seen:
-            raise ValueError("ambiguous_source: duplicate observation")
+            raise AmbiguousSourceError("ambiguous_source: duplicate observation")
         seen.add(stamp)
         result.append({"ts": stamp, "value": value})
     return result

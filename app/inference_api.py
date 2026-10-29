@@ -25,6 +25,11 @@ def error(exc):
     return jsonify({"error": {"code": exc.code, "message": exc.code}}), exc.status
 
 
+@bp.errorhandler(source_storage.AmbiguousSourceError)
+def ambiguous_source(exc):
+    return error(adapter.AdapterError(409, "ambiguous_source"))
+
+
 def authorized_source(value):
     pid = project()
     try:
@@ -58,19 +63,14 @@ def predict():
     except ValidationError:
         raise adapter.AdapterError(422, "invalid_input") from None
     source = authorized_source(body["source"])
-    try:
-        return jsonify(
-            adapter.predict(
-                source,
-                body["model_version"],
-                body["feature_schema_version"],
-                client=current_app.config.get("INFERENCE_HTTP_CLIENT"),
-            )
+    return jsonify(
+        adapter.predict(
+            source,
+            body["model_version"],
+            body["feature_schema_version"],
+            client=current_app.config.get("INFERENCE_HTTP_CLIENT"),
         )
-    except ValueError as exc:
-        if isinstance(exc, adapter.AdapterError):
-            raise
-        raise adapter.AdapterError(409, "ambiguous_source") from None
+    )
 
 
 @bp.get("/scores")

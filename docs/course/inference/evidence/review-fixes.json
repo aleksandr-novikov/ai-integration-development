@@ -1,0 +1,109 @@
+{
+  "checked_on": "2026-10-29",
+  "pr": 39,
+  "issue": 12,
+  "original_head": "a78536bcff77a08276a2ce0f0ccf5f3455262bb8",
+  "master_head": "ac0ae04fda308faaf613a3880be84b2d6463f88e",
+  "dependencies": {
+    "36": "MERGED",
+    "37": "MERGED"
+  },
+  "merge_check": {
+    "command": "git merge-tree --write-tree a78536bcff77a08276a2ce0f0ccf5f3455262bb8 ac0ae04fda308faaf613a3880be84b2d6463f88e",
+    "exit_code": 0,
+    "tree": "bb527c62ba73426c75f4656b59fe7063d708a326",
+    "tree_matches_original_pr": true,
+    "original_divergence": {
+      "pr_only_commits": 3,
+      "master_only_commits": 1
+    },
+    "github_mergeable": false,
+    "note": "GitHub reports false; local merge against the fetched master has no conflicts or additional tree changes. No remote branch was changed."
+  },
+  "environment": {
+    "python": "3.12.3",
+    "ruff": "0.9.4",
+    "dependencies": "requirements.txt and requirements-dev.txt",
+    "sqlite_cli": "3.40.1 from Debian sqlite3/libsqlite3-0 3.40.1-2+deb12u2, extracted under /tmp; only the CLI uses its matching library",
+    "databases": "Temporary test SQLite only; no production migrations",
+    "external_inference": "FastAPI TestClient with synthetic test models and tokens; no external LLM or Telegram"
+  },
+  "before": {
+    "runtime_head": "a78536bcff77a08276a2ce0f0ccf5f3455262bb8",
+    "command": "python -m pytest -q tests/test_inference_service.py -k 'source_failure or source_history_failure or source_outage or duplicate_metrics or explanation_conflict or conflict_does_not or unknown_value_error'",
+    "passed": 2,
+    "failed": 10,
+    "deselected": 36,
+    "observed": [
+      "ASGI 503 for first source aborts score_project before the healthy source",
+      "OperationalError during metrics reading aborts subsequent sources",
+      "Invalid feature history raises ValueError and aborts subsequent sources",
+      "GET /api/inference/metrics returns 500 for duplicate canonical observations in either metric",
+      "POST /api/explain returns 500 for duplicate requested history; ambiguous context can reach explanation generation",
+      "Unexpected ValueError from /api/inference/predict is incorrectly returned as 409 ambiguous_source"
+    ],
+    "raw_local_log": ".git/inference-review-evidence/before.txt"
+  },
+  "after": {
+    "added_regression_cases": 18,
+    "service": {
+      "command": "python -m pytest -q tests/test_inference_service.py",
+      "passed": 49,
+      "failed": 0
+    },
+    "profile": {
+      "command": "python -m pytest -q tests/test_inference_service.py tests/test_inference_migration.py tests/test_llm.py tests/test_llm_audit.py tests/test_openapi_contract.py tests/test_model_registry.py",
+      "passed": 227,
+      "failed": 0
+    },
+    "full": {
+      "command": "PATH=<sqlite-cli-bin>:<venv-bin>:$PATH SECRET_KEY=synthetic-review-secret MONITOR_DB_URL=sqlite:////tmp/inference-review-full-final.db NIM_API_KEY= TELEGRAM_BOT_TOKEN= python -m pytest -q",
+      "passed": 1292,
+      "failed": 0,
+      "deselected": 49,
+      "duration_seconds": 233.75,
+      "warnings": 7906,
+      "raw_local_log": ".git/inference-review-evidence/full.txt"
+    },
+    "checks": {
+      "ruff check .": "passed",
+      "git diff --check": "passed",
+      "pip check": "passed",
+      "python -m openapi_spec_validator docs/course/api/legacy.openapi.yaml": "passed",
+      "python -m openapi_spec_validator docs/course/api/inference.openapi.yaml": "passed"
+    },
+    "initial_full_environment_failures": {
+      "passed": 1285,
+      "failed": 6,
+      "deselected": 49,
+      "causes": [
+        "sqlite3 CLI absent (4 backup/restore tests)",
+        "python not found by subprocesses (2 CLI tests)"
+      ],
+      "resolution": "Provisioned SQLite CLI under /tmp; rerun with that CLI and the virtualenv bin directory on PATH; no repository tests were weakened"
+    },
+    "unavailable": [
+      "PostgreSQL integration: Docker executable/socket unavailable"
+    ],
+    "warnings": [
+      "Existing joblib/NumPy deprecations",
+      "Starlette TestClient/httpx deprecation",
+      "Existing Flask-Limiter in-memory storage warning and Sentry deprecations"
+    ],
+    "not_run": [
+      "Integration and browser E2E: 49 tests excluded by the default project marker selection"
+    ],
+    "source_sha256": {
+      "app/api.py": "7f7c1afe76516d3dfd74f49fae29b8c8239bff40c621977a433347b43f0e9f4a",
+      "app/inference_adapter.py": "fa5877746cc134338357b6ef0e166853bdf921fda94d59a09e0f845dfd4c9d81",
+      "app/inference_api.py": "c1ca7e430ba6d71ede09493336248c653d916a1eb33f5ed83012175ef935f235",
+      "app/source_storage.py": "e529402c861e9b55d6b161c85bce0b27b6937bf0ece1028c5bcc34c33917ae11",
+      "tests/test_inference_service.py": "9d1eaea56b9fb4d839ea856af47512770547c14f0203b27cce375e263bf48131"
+    }
+  },
+  "publication": {
+    "prepare": "refused by VDS2: updating a branch outside vds/ requires separate administrator permission for this PR",
+    "alternate_pr": "Installed publisher uses a trusted fixed base; no supported option to create a fix-only PR targeting course/inference-service",
+    "new_commit_ci": "Cannot run GitHub Actions until safe publication is available"
+  }
+}

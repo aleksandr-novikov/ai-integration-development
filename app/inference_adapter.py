@@ -1,15 +1,19 @@
 """Authenticated Flask/background caller. History never enters the ASGI service."""
 
 import json
+import logging
 import os
 from pathlib import Path
 
 import httpx
 from jsonschema import ValidationError
+from sqlalchemy.exc import OperationalError, TimeoutError
 
 from app import source_storage
 from ml.features import FEATURE_NAMES, build_rows
 from ml.inference_contract import canonical_ts, validator
+
+logger = logging.getLogger(__name__)
 
 
 class AdapterError(ValueError):
@@ -126,17 +130,25 @@ def score_project(project_id, *, client=None):
     """Periodic scoring uses the same published version and HTTP boundary as UI."""
     for entry in bindings(project_id):
         source = entry["source"]
-        rc = source_storage.metrics(source, "row_count")
-        nr = source_storage.metrics(source, "null_rate")
-        times, _ = build_rows(rc, nr)
-        for stamp in times:
-            predict(
-                source,
-                entry["model_version"],
-                entry["feature_schema_version"],
-                observed_at=stamp,
-                client=client,
-            )
+        try:
+            try:
+                rc = source_storage.metrics(source, "row_count")
+                nr = source_storage.metrics(source, "null_rate")
+                times, _ = build_rows(rc, nr)
+            except ValueError as exc:
+                raise AdapterError(422, "invalid_history") from exc
+            for stamp in times:
+                predict(
+                    source,
+                    entry["model_version"],
+                    entry["feature_schema_version"],
+                    observed_at=stamp,
+                    client=client,
+                )
+        except (AdapterError, source_storage.AmbiguousSourceError, OperationalError, TimeoutError):
+            # Only history validation, adapter failures and transient storage
+            # errors are recoverable here; other failures propagate.
+            logger.exception("Published inference failed for source=%s", source)
 
 
 def train_candidates(project_id):

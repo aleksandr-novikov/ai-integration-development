@@ -228,7 +228,7 @@ def explain():
     """
     from ml.inference_contract import canonical_ts
 
-    from .llm import explain_anomaly
+    from .llm import _context_window, explain_anomaly
 
     if not current_user.is_authenticated and not (
         current_app.testing and current_app.config.get("LOGIN_DISABLED")
@@ -259,6 +259,7 @@ def explain():
     if source is not None:
         from app.inference_adapter import AdapterError
         from app.inference_api import authorized_source
+        from app.source_storage import AmbiguousSourceError
         from app.source_storage import metrics as source_metrics
 
         try:
@@ -267,8 +268,16 @@ def explain():
             return jsonify({"error": exc.code}), exc.status
         if source["table_name"] != table:
             return jsonify({"error": "invalid_source"}), 400
-        if not source_metrics(source, metric):
-            return jsonify({"error": "table not found"}), 404
+        try:
+            if not source_metrics(source, metric):
+                return jsonify({"error": "table not found"}), 404
+            # Both histories enter the explanation, including its fallback.
+            # Validate that context before reading the cache or calling NIM.
+            window = _context_window(ts)
+            for context_metric in ("row_count", "null_rate"):
+                source_metrics(source, context_metric, window=window)
+        except AmbiguousSourceError:
+            return jsonify({"error": "ambiguous_source"}), 409
         cache_scope.update(connection_id=source["connection_id"], schema_name=source["schema_name"])
         context["source"] = source
     else:
