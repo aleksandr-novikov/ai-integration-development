@@ -2,12 +2,14 @@
 
 import copy
 import json
+import logging
 import re
 import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -623,24 +625,43 @@ def test_source_outage_keeps_existing_versions(two_sources):
 @pytest.mark.parametrize("error", [RuntimeError("bug"), MemoryError("out of memory")])
 def test_system_errors_are_not_suppressed(two_sources, monkeypatch, error):
     app, _, _ = two_sources
+    attempts = []
 
-    def broken(*args, **kwargs):
-        raise error
+    def broken(source, *args, **kwargs):
+        attempts.append(source["connection_id"])
+        raise type(error)(str(error))
 
     monkeypatch.setattr(source_storage, "metrics", broken)
-    with pytest.raises(type(error), match=str(error)):
+    if isinstance(error, MemoryError):
+        # Resource exhaustion stops the job at once instead of trying more sources.
+        with pytest.raises(MemoryError, match=str(error)):
+            adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+        assert attempts == ["connection-b"]
+        return
+    with pytest.raises(ExceptionGroup) as info:
         adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    # Every source is attempted; the failures are then reported together.
+    assert attempts == ["connection-b", "connection-a"]
+    assert [(type(e), str(e)) for e in info.value.exceptions] == [(RuntimeError, "bug")] * 2
+    assert "connection-b" in info.value.exceptions[0].__notes__[0]
+    assert "connection-a" in info.value.exceptions[1].__notes__[0]
 
 
 def test_unexpected_prediction_value_error_is_not_suppressed(two_sources, monkeypatch):
     app, _, _ = two_sources
+    calls = []
 
-    def broken(*args, **kwargs):
+    def broken(source, *args, **kwargs):
+        calls.append(source["connection_id"])
         raise ValueError("unexpected prediction bug")
 
     monkeypatch.setattr(adapter, "predict", broken)
-    with pytest.raises(ValueError, match="unexpected prediction bug"):
+    with pytest.raises(ExceptionGroup) as info:
         adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    assert calls == ["connection-b", "connection-a"]
+    assert [(type(e), str(e)) for e in info.value.exceptions] == [
+        (ValueError, "unexpected prediction bug")
+    ] * 2
 
 
 def duplicate_observation(source, metric):
@@ -810,3 +831,232 @@ def test_unknown_value_error_is_not_an_ambiguity(ui, monkeypatch, route):
         )
     assert response.status_code == 500
     assert "ambiguous_source" not in response.text
+
+
+def add_history(source, minutes_back, row_counts):
+    """Aligned row_count/null_rate points `minutes_back` minutes before now."""
+    base = datetime.now(UTC).replace(second=0, microsecond=0)
+    for metric, values in [("row_count", row_counts), ("null_rate", [0.02] * len(row_counts))]:
+        storage.save_metrics(
+            [
+                {
+                    "ts": (base - timedelta(minutes=minutes)).isoformat(),
+                    "table_name": source["table_name"],
+                    "metric_name": metric,
+                    "value": value,
+                }
+                for minutes, value in zip(minutes_back, values, strict=True)
+            ],
+            source["project_id"],
+            connection_id=source["connection_id"],
+            schema_name=source["schema_name"],
+        )
+
+
+def set_value(source, metric, ts, value):
+    with storage.get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE metrics SET value = :value WHERE project_id = :project_id "
+                "AND connection_id = :connection_id AND schema_name = :schema_name "
+                "AND table_name = :table_name AND metric_name = :metric AND ts = :ts"
+            ),
+            {**source, "metric": metric, "ts": ts, "value": value},
+        )
+
+
+def stored_ts(source, metric="row_count"):
+    """Raw stored timestamps (needed to update a row in place)."""
+    with storage.get_engine().connect() as conn:
+        return [
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT ts FROM metrics WHERE project_id = :project_id "
+                    "AND connection_id = :connection_id AND metric_name = :metric ORDER BY ts"
+                ),
+                {**source, "metric": metric},
+            )
+        ]
+
+
+def break_allowlist(source):
+    with storage.get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE connections SET iceberg_namespace_allowlist = 'not-json' WHERE id = :id"),
+            {"id": source["connection_id"]},
+        )
+
+
+class RecordingClient:
+    """Real ASGI client; optionally answers one observation with a fixed status."""
+
+    def __init__(self, inner, reject=None, status=422):
+        self.inner, self.reject, self.status, self.sent = inner, reject, status, []
+
+    def post(self, url, json=None, **kwargs):
+        self.sent.append((json["source"]["connection_id"], json["observed_at"]))
+        if json["observed_at"] == self.reject:
+            return httpx.Response(self.status, json={"error": {"code": "rejected"}})
+        return self.inner.post(url, json=json, **kwargs)
+
+
+def test_malformed_source_configuration_is_isolated_and_reported(two_sources, caplog):
+    app, config, first = two_sources
+    break_allowlist(first["source"])
+    with pytest.raises(ExceptionGroup) as info:
+        adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    healthy = config["bindings"][1]
+    assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1
+    assert source_storage.versions(first["source"]) == []
+    (error,) = info.value.exceptions
+    assert isinstance(error, json.JSONDecodeError)
+    assert "connection-b" in error.__notes__[0] and "orders" in error.__notes__[0]
+    assert "connection-b" in caplog.text
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf")])
+def test_non_finite_history_never_reaches_service(two_sources, caplog, value):
+    app, config, first = two_sources
+    caplog.set_level(logging.WARNING)
+    set_value(first["source"], "row_count", stored_ts(first["source"])[-1], value)
+    assert source_storage.metrics(first["source"], "row_count")[-1]["value"] == value
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"])
+    adapter.score_project(SOURCE["project_id"], client=client)  # nothing unexpected
+    assert [sent[0] for sent in client.sent] == ["connection-a"]
+    assert source_storage.versions(first["source"]) == []
+    healthy = config["bindings"][1]
+    assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1
+    assert "invalid_history" in caplog.text and "connection-b" in caplog.text
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_non_finite_history_returns_invalid_history(ui, monkeypatch, value):
+    app, http, config = ui
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"])
+    app.config["INFERENCE_HTTP_CLIENT"] = client
+    if value == float("inf"):
+        set_value(SOURCE, "null_rate", stored_ts(SOURCE, "null_rate")[-1], value)
+    else:  # SQLite cannot store NaN; PostgreSQL DOUBLE PRECISION can.
+        original = source_storage.metrics
+
+        def with_nan(source, metric, *args, **kwargs):
+            rows = original(source, metric, *args, **kwargs)
+            return [*rows[:-1], {**rows[-1], "value": value}] if metric == "null_rate" else rows
+
+        monkeypatch.setattr(source_storage, "metrics", with_nan)
+    response = http.post("/api/inference/predict", json=config["bindings"][0])
+    assert response.status_code == 422
+    assert response.json == {"error": {"code": "invalid_history", "message": "invalid_history"}}
+    assert client.sent == []
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM anomaly_scores")).scalar() == 0
+
+
+def test_real_duplicate_in_one_source_does_not_block_others(two_sources, caplog):
+    app, config, first = two_sources
+    duplicate_observation(first["source"], "null_rate")
+    adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    healthy = config["bindings"][1]
+    assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1
+    assert source_storage.versions(first["source"]) == []
+    assert "AmbiguousSourceError" in caplog.text and "connection-b" in caplog.text
+
+
+def test_unexpected_error_is_reported_after_other_sources(two_sources, monkeypatch):
+    app, config, first = two_sources
+    original = source_storage.save_prediction
+
+    def broken(result):
+        if result["source"] == first["source"]:
+            raise RuntimeError("storage bug")
+        return original(result)
+
+    monkeypatch.setattr(source_storage, "save_prediction", broken)
+    with pytest.raises(ExceptionGroup) as info:
+        adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    (error,) = info.value.exceptions
+    assert (type(error), str(error)) == (RuntimeError, "storage bug")
+    assert "connection-b" in error.__notes__[0]
+    healthy = config["bindings"][1]
+    assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1
+
+
+@pytest.fixture
+def long_history(ui):
+    """SOURCE gets five aligned points, i.e. four scorable observations."""
+    app, _, config = ui
+    add_history(SOURCE, [75, 60, 45], [70, 80, 90])
+    stamps = [row["ts"] for row in source_storage.metrics(SOURCE, "row_count")]
+    assert len(stamps) == 5
+    return app, config, stamps
+
+
+def saved(entry):
+    rows = source_storage.scores(entry["source"], entry["model_version"], "1.0.0")
+    assert all(
+        (r["source"], r["model_version"], r["feature_schema_version"])
+        == (entry["source"], entry["model_version"], "1.0.0")
+        for r in rows
+    )
+    return [canonical_ts(r["ts"]) for r in rows]
+
+
+def test_rejected_middle_observation_does_not_block_later_ones(long_history, caplog):
+    app, config, stamps = long_history
+    caplog.set_level(logging.WARNING)
+    entry = config["bindings"][0]
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"], reject=stamps[2])
+    for _ in range(2):  # repeated runs stay idempotent around the rejected point
+        adapter.score_project(SOURCE["project_id"], client=client)
+    assert saved(entry) == [stamps[1], stamps[3], stamps[4]]
+    assert source_storage.versions(SOURCE) == [
+        {"model_version": entry["model_version"], "feature_schema_version": "1.0.0"}
+    ]
+    assert stamps[2] in caplog.text and "invalid_input" in caplog.text
+
+
+def test_non_finite_middle_point_skips_only_affected_observations(long_history):
+    app, config, stamps = long_history
+    set_value(SOURCE, "row_count", stored_ts(SOURCE)[2], float("inf"))
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"])
+    adapter.score_project(SOURCE["project_id"], client=client)
+    # The point and its successor carry a non-finite value or delta.
+    assert saved(config["bindings"][0]) == [stamps[1], stamps[4]]
+    assert [sent[1] for sent in client.sent] == [stamps[1], stamps[4]]
+
+
+def test_source_level_refusal_stops_remaining_observations(long_history):
+    app, config, stamps = long_history
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"], reject=stamps[2], status=503)
+    adapter.score_project(SOURCE["project_id"], client=client)
+    # model_unavailable concerns the whole source, so later points are not retried.
+    assert [sent[1] for sent in client.sent] == [stamps[1], stamps[2]]
+    assert saved(config["bindings"][0]) == [stamps[1]]
+
+
+@pytest.mark.parametrize("entry_point", ["scheduler", "per_project"])
+def test_scheduler_logs_aggregated_source_failures(two_sources, monkeypatch, caplog, entry_point):
+    from collectors import per_project, scheduler
+
+    app, config, first = two_sources
+    break_allowlist(first["source"])
+    real = adapter.score_project
+    monkeypatch.setattr(
+        adapter, "score_project", lambda pid: real(pid, client=app.config["INFERENCE_HTTP_CLIENT"])
+    )
+    monkeypatch.setattr(adapter, "train_candidates", lambda pid: [])
+    caplog.set_level(logging.ERROR)
+    if entry_point == "scheduler":
+        monkeypatch.setattr(scheduler, "_iter_retrain_projects", lambda: [SOURCE["project_id"]])
+        scheduler.retrain_anomaly_detectors()
+    else:
+        per_project._maybe_notify_anomalies(SOURCE["project_id"], ["orders"])
+    (record,) = [r for r in caplog.records if "published inference failed" in r.getMessage()]
+    assert record.getMessage() == f"[project={SOURCE['project_id']}] published inference failed"
+    group = record.exc_info[1]
+    assert isinstance(group, ExceptionGroup)
+    assert [type(e) for e in group.exceptions] == [json.JSONDecodeError]
+    healthy = config["bindings"][1]
+    assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1

@@ -2,12 +2,14 @@
 
 import json
 import logging
+import math
 import os
 from pathlib import Path
 
 import httpx
 from jsonschema import ValidationError
-from sqlalchemy.exc import OperationalError, TimeoutError
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app import source_storage
 from ml.features import FEATURE_NAMES, build_rows
@@ -19,6 +21,13 @@ logger = logging.getLogger(__name__)
 class AdapterError(ValueError):
     def __init__(self, status, code):
         self.status, self.code = status, code
+
+
+# Expected failures of one source: invalid history, service refusals and
+# transient storage errors. They are logged and never stop other sources.
+SOURCE_ERRORS = (AdapterError, source_storage.AmbiguousSourceError, OperationalError, PoolTimeoutError)
+# Refusals tied to one observation; later observations stay scorable.
+OBSERVATION_ERRORS = frozenset({"invalid_history", "insufficient_history", "invalid_input"})
 
 
 def configuration():
@@ -65,11 +74,18 @@ def predict(source, model_version, feature_schema_version, *, client=None, obser
         stamp = canonical_ts(observed_at)
         rc = [row for row in rc if row["ts"] <= stamp]
         nr = [row for row in nr if row["ts"] <= stamp]
-    times, rows = build_rows(rc, nr)
+    try:
+        times, rows = build_rows(rc, nr)
+    except ValueError as exc:
+        raise AdapterError(422, "invalid_history") from exc
     if not rows:
         raise AdapterError(422, "insufficient_history")
     if observed_at is not None and times[-1] != canonical_ts(observed_at):
         raise AdapterError(422, "insufficient_history")
+    features = dict(zip(FEATURE_NAMES, rows[-1], strict=True))
+    # JSON has no NaN/Infinity: such history is invalid, not a service failure.
+    if not all(math.isfinite(value) for value in features.values()):
+        raise AdapterError(422, "invalid_history")
     aligned = sorted({r["ts"] for r in rc} & {r["ts"] for r in nr})
     payload = {
         "source": source,
@@ -77,7 +93,7 @@ def predict(source, model_version, feature_schema_version, *, client=None, obser
         "feature_schema_version": feature_schema_version,
         "observed_at": times[-1],
         "previous_observed_at": aligned[-2],
-        "features": dict(zip(FEATURE_NAMES, rows[-1], strict=True)),
+        "features": features,
     }
     config = configuration()
     token = os.environ.get(config.get("token_env", "INFERENCE_ADAPTER_TOKEN"), "")
@@ -126,29 +142,56 @@ def predict(source, model_version, feature_schema_version, *, client=None, obser
     return result
 
 
+def score_source(entry, *, client=None):
+    """Score every stored observation of one configured source."""
+    source = entry["source"]
+    rc = source_storage.metrics(source, "row_count")
+    nr = source_storage.metrics(source, "null_rate")
+    try:
+        times, _ = build_rows(rc, nr)
+    except ValueError as exc:
+        raise AdapterError(422, "invalid_history") from exc
+    for stamp in times:
+        try:
+            predict(
+                source,
+                entry["model_version"],
+                entry["feature_schema_version"],
+                observed_at=stamp,
+                client=client,
+            )
+        except AdapterError as exc:
+            if exc.code not in OBSERVATION_ERRORS:
+                raise
+            logger.warning(
+                "Published inference skipped observed_at=%s for source=%s: %s",
+                stamp,
+                source,
+                exc.code,
+            )
+
+
 def score_project(project_id, *, client=None):
-    """Periodic scoring uses the same published version and HTTP boundary as UI."""
+    """Periodic scoring uses the same published version and HTTP boundary as UI.
+
+    Every source is attempted. Expected source failures are logged; unexpected
+    ones are logged and then raised together as an ExceptionGroup.
+    """
+    unexpected = []
     for entry in bindings(project_id):
         source = entry["source"]
         try:
-            try:
-                rc = source_storage.metrics(source, "row_count")
-                nr = source_storage.metrics(source, "null_rate")
-                times, _ = build_rows(rc, nr)
-            except ValueError as exc:
-                raise AdapterError(422, "invalid_history") from exc
-            for stamp in times:
-                predict(
-                    source,
-                    entry["model_version"],
-                    entry["feature_schema_version"],
-                    observed_at=stamp,
-                    client=client,
-                )
-        except (AdapterError, source_storage.AmbiguousSourceError, OperationalError, TimeoutError):
-            # Only history validation, adapter failures and transient storage
-            # errors are recoverable here; other failures propagate.
+            score_source(entry, client=client)
+        except SOURCE_ERRORS:
             logger.exception("Published inference failed for source=%s", source)
+        except MemoryError:
+            raise
+        except Exception as exc:
+            logger.exception("Unexpected published inference failure for source=%s", source)
+            exc.add_note(f"source={source}")
+            unexpected.append(exc)
+    if unexpected:
+        raise ExceptionGroup(f"published inference failed for project {project_id}", unexpected)
 
 
 def train_candidates(project_id):
