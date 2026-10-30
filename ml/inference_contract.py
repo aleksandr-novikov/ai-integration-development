@@ -65,7 +65,10 @@ def canonical_ts(value):
         raise ValueError("timezone required")
     from datetime import UTC
 
-    return stamp.astimezone(UTC).isoformat(timespec="microseconds")
+    try:
+        return stamp.astimezone(UTC).isoformat(timespec="microseconds")
+    except OverflowError as exc:
+        raise ValueError("timestamp is outside the supported UTC range") from exc
 
 
 def validate_semantics(payload):

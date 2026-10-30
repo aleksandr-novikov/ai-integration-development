@@ -3,6 +3,7 @@
 import copy
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -153,6 +154,49 @@ def test_cross_field_and_structural_errors(client, bundles, change):
     else:
         request["observed_at"] = "2026-10-25T12:00:00"
     assert client.post("/v1/predict", json=request, headers=HEADERS).status_code == 422
+
+
+@pytest.mark.parametrize("field", ["observed_at", "previous_observed_at"])
+@pytest.mark.parametrize(
+    "stamp", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"]
+)
+def test_timestamp_outside_utc_range_returns_invalid_input(client, bundles, field, stamp):
+    request = payload(bundles)
+    request[field] = stamp
+    response = client.post("/v1/predict", json=request, headers=HEADERS)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_input"
+
+
+@pytest.mark.parametrize(
+    "stamp", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"]
+)
+def test_explanation_timestamp_outside_utc_range_is_rejected_before_reads(ui, monkeypatch, stamp):
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid timestamp must not read history/cache or call the LLM")
+
+    for name in ("_has_project_table_metrics", "get_cached_explanation"):
+        monkeypatch.setattr(f"app.api.{name}", forbidden)
+    monkeypatch.setattr(source_storage, "metrics", forbidden)
+    monkeypatch.setattr("app.llm.explain_anomaly", forbidden)
+    response = ui[1].post(
+        "/api/explain", json={"table": "orders", "metric": "row_count", "ts": stamp}
+    )
+    assert response.status_code == 400
+    assert response.json == {"error": "ts must be RFC 3339 with a timezone"}
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00Z", "0001-01-01T01:00:00Z"])
+def test_explanation_context_window_stays_in_datetime_range(ui, monkeypatch, stamp):
+    from app import llm
+
+    monkeypatch.setattr(llm.settings, "NIM_API_KEY", "")
+    response = ui[1].post(
+        "/api/explain",
+        json={"source": SOURCE, "table": "orders", "metric": "row_count", "ts": stamp},
+    )
+    assert response.status_code == 200
+    assert response.json["confidence"] == 0.3
 
 
 def test_source_bound_model_cannot_be_reused_by_other_allowed_source(bundles):
@@ -1082,6 +1126,45 @@ def test_metrics_rejects_postgres_nan_with_strict_json(ui, monkeypatch):
     response = http.get("/api/inference/metrics", query_string=SOURCE)
     assert response.status_code == 422
     json.dumps(response.json, allow_nan=False)
+
+
+@pytest.mark.parametrize("metric", ["row_count", "null_rate"])
+@pytest.mark.parametrize("value", ["not-a-number", float("inf"), float("-inf"), float("nan")])
+def test_explanation_rejects_invalid_context_numbers(ui, monkeypatch, metric, value):
+    from app import api, llm
+
+    app, http, _ = ui
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    monkeypatch.setattr(llm.settings, "NIM_API_KEY", "")
+    stamp = stored_ts(SOURCE, metric)[-1]
+    if isinstance(value, float) and math.isnan(value):
+        # SQLite cannot store NaN in this NOT NULL column; emulate a PG row.
+        original = source_storage.metrics
+
+        def with_nan(source, name, *args, **kwargs):
+            rows = original(source, name, *args, **kwargs)
+            if name == metric:
+                rows[-1] = {**rows[-1], "value": value}
+            return rows
+
+        monkeypatch.setattr(source_storage, "metrics", with_nan)
+    else:
+        set_value(SOURCE, metric, stamp, value)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid context must not read/write the cache or call the LLM")
+
+    monkeypatch.setattr(api, "get_cached_explanation", forbidden)
+    monkeypatch.setattr(api, "save_explanation", forbidden)
+    monkeypatch.setattr(llm, "explain_anomaly", forbidden)
+    response = http.post(
+        "/api/explain",
+        json={"source": SOURCE, "table": "orders", "metric": metric, "ts": stamp},
+    )
+    assert response.status_code == 422
+    assert response.json == {"error": "invalid_history"}
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM llm_explanations")).scalar() == 0
 
 
 def test_source_level_refusal_stops_remaining_observations(long_history):

@@ -226,7 +226,7 @@ def explain():
     Checks the 24 h cache before calling NIM. On NIM failure, falls back
     to a rule-based explanation (confidence=0.3).
     """
-    from ml.inference_contract import canonical_ts
+    from ml.inference_contract import FiniteValidator, canonical_ts
 
     from .llm import _context_window, explain_anomaly
 
@@ -274,10 +274,16 @@ def explain():
             # Both histories enter the explanation, including its fallback.
             # Validate that context before reading the cache or calling NIM.
             window = _context_window(ts)
+            context_rows = []
             for context_metric in ("row_count", "null_rate"):
-                source_metrics(source, context_metric, window=window)
+                context_rows.extend(source_metrics(source, context_metric, window=window))
         except AmbiguousSourceError:
             return jsonify({"error": "ambiguous_source"}), 409
+        if any(
+            not FiniteValidator.TYPE_CHECKER.is_type(row["value"], "number")
+            for row in context_rows
+        ):
+            return jsonify({"error": "invalid_history"}), 422
         cache_scope.update(connection_id=source["connection_id"], schema_name=source["schema_name"])
         context["source"] = source
     else:

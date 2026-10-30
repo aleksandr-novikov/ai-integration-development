@@ -27,8 +27,11 @@ def _context_window(ts: str) -> timedelta:
         ts_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         if ts_dt.tzinfo is None:
             ts_dt = ts_dt.replace(tzinfo=UTC)
-        age = datetime.now(UTC) - ts_dt
-        return max(timedelta(hours=48), age + timedelta(hours=2))
+        now = datetime.now(UTC)
+        age = now - ts_dt
+        window = max(timedelta(hours=48), age + timedelta(hours=2))
+        # The historical buffer must not push a storage cutoff below year 1.
+        return min(window, now - datetime.min.replace(tzinfo=UTC))
     except (ValueError, TypeError):
         return timedelta(hours=48)
 
