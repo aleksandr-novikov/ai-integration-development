@@ -912,7 +912,26 @@ def test_malformed_source_configuration_is_isolated_and_reported(two_sources, ca
     (error,) = info.value.exceptions
     assert isinstance(error, json.JSONDecodeError)
     assert "connection-b" in error.__notes__[0] and "orders" in error.__notes__[0]
-    assert "connection-b" in caplog.text
+    # Reported once, by the caller that receives the group, not also here.
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_memory_error_still_reports_earlier_unexpected_failures(two_sources, monkeypatch, caplog):
+    app, _, first = two_sources
+
+    def broken(source, *args, **kwargs):
+        if source == first["source"]:
+            raise RuntimeError("bug")
+        raise MemoryError("out of memory")
+
+    monkeypatch.setattr(source_storage, "metrics", broken)
+    with pytest.raises(MemoryError):
+        adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    (record,) = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    group = record.exc_info[1]
+    assert isinstance(group, ExceptionGroup)
+    assert [(type(e), str(e)) for e in group.exceptions] == [(RuntimeError, "bug")]
+    assert "connection-b" in group.exceptions[0].__notes__[0]
 
 
 @pytest.mark.parametrize("value", [float("inf"), float("-inf")])
@@ -1036,6 +1055,31 @@ def test_source_level_refusal_stops_remaining_observations(long_history):
     assert saved(config["bindings"][0]) == [stamps[1]]
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("model_version", "models/registry/if-demo"),  # a path instead of an ID
+        ("model_version", "legacy-unknown"),
+        ("feature_schema_version", "1.0"),
+    ],
+)
+def test_invalid_binding_is_a_source_error(two_sources, caplog, field, value):
+    app, config, first = two_sources
+    add_history(first["source"], [75, 60, 45], [70, 80, 90])
+    first[field] = value
+    caplog.set_level(logging.WARNING)
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"])
+    for _ in range(2):  # every run reports it once and sends nothing for the source
+        adapter.score_project(SOURCE["project_id"], client=client)
+    assert {sent[0] for sent in client.sent} == {"connection-a"}
+    assert source_storage.versions(first["source"]) == []
+    healthy = config["bindings"][1]
+    assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1
+    bad = [r for r in caplog.records if "connection-b" in r.getMessage()]
+    assert [r.levelno for r in bad] == [logging.ERROR] * 2
+    assert all(r.exc_info[1].code == "invalid_binding" for r in bad)
+
+
 @pytest.mark.parametrize("entry_point", ["scheduler", "per_project"])
 def test_scheduler_logs_aggregated_source_failures(two_sources, monkeypatch, caplog, entry_point):
     from collectors import per_project, scheduler
@@ -1053,7 +1097,8 @@ def test_scheduler_logs_aggregated_source_failures(two_sources, monkeypatch, cap
         scheduler.retrain_anomaly_detectors()
     else:
         per_project._maybe_notify_anomalies(SOURCE["project_id"], ["orders"])
-    (record,) = [r for r in caplog.records if "published inference failed" in r.getMessage()]
+    # One unexpected failure gives exactly one error record, with its traceback.
+    (record,) = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert record.getMessage() == f"[project={SOURCE['project_id']}] published inference failed"
     group = record.exc_info[1]
     assert isinstance(group, ExceptionGroup)

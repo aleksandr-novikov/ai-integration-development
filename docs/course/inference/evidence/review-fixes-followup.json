@@ -66,5 +66,40 @@
   "publication": {
     "prepare": "vds2-pr prepare --pr 39 refused (request 3b8aa36e87e64e3c4c53d3ab): updating a branch outside vds/ requires separate administrator permission",
     "delivery": "Local commit exported as a Git bundle for independent review"
+  },
+  "final_review_fix": {
+    "checked_on": "2026-10-30",
+    "base_commit": "4dd8c426a126bd5a7dccb10179d5f1c5c3af8fdc",
+    "findings": {
+      "N-1": "A malformed model_version or feature_schema_version in bindings got 422 invalid_input from the service and was treated as an observation failure: every observation was sent on every run and only warnings were logged",
+      "N-2": "An unexpected failure was logged twice: per source and again as the ExceptionGroup by the job",
+      "N-3": "README said MemoryError stops the job; scheduler and per_project catch Exception, so they log it for the project and continue"
+    },
+    "resolution": {
+      "N-1": "check_binding validates both versions against the ModelVersion and FeatureSchemaVersion contract schemas before history is read; failure is the source error 422 invalid_binding and no observation is sent",
+      "N-2": "Unexpected failures are only annotated and raised; the job logs the group once with every traceback. If MemoryError follows, the already collected failures are logged before it propagates",
+      "N-3": "README describes the actual scheduler/per_project behaviour"
+    },
+    "before": {
+      "runtime_head": "4dd8c426a126bd5a7dccb10179d5f1c5c3af8fdc",
+      "selection": "3 new N-1 cases, 1 new MemoryError case, 3 tightened log assertions",
+      "passed": 58,
+      "failed": 7
+    },
+    "after": {
+      "service": {"passed": 65, "failed": 0},
+      "profile": {"passed": 178, "failed": 0},
+      "related": {"passed": 141, "failed": 0},
+      "full": {
+        "passed": 1301,
+        "failed": 7,
+        "skipped": 6,
+        "deselected": 1,
+        "failures": "Same 7 environment failures as before: sqlite3 CLI absent, mlflow not installed"
+      },
+      "checks": {"ruff check .": "passed", "git diff --check": "passed", "openapi_spec_validator (both specs)": "passed"},
+      "resources": "Sequential runs, one BLAS/OpenMP thread; peak sandbox RSS 1016 MB, minimum host MemAvailable 4466 MB"
+    },
+    "out_of_scope": ["N-5 non-numeric SQLite text blocks the source", "N-6 Infinity in /api/inference/metrics", "full-history rescoring cost"]
   }
 }

@@ -142,9 +142,23 @@ def predict(source, model_version, feature_schema_version, *, client=None, obser
     return result
 
 
+def check_binding(model_version, feature_schema_version):
+    """Configured versions concern the whole source: check them before any request.
+
+    The service answers a malformed version with the same 422 invalid_input as a
+    rejected observation, so this must not be left to the per-observation path.
+    """
+    try:
+        validator("ModelVersion").validate(model_version)
+        validator("FeatureSchemaVersion").validate(feature_schema_version)
+    except ValidationError:
+        raise AdapterError(422, "invalid_binding") from None
+
+
 def score_source(entry, *, client=None):
     """Score every stored observation of one configured source."""
     source = entry["source"]
+    check_binding(entry["model_version"], entry["feature_schema_version"])
     rc = source_storage.metrics(source, "row_count")
     nr = source_storage.metrics(source, "null_rate")
     try:
@@ -175,8 +189,10 @@ def score_project(project_id, *, client=None):
     """Periodic scoring uses the same published version and HTTP boundary as UI.
 
     Every source is attempted. Expected source failures are logged; unexpected
-    ones are logged and then raised together as an ExceptionGroup.
+    ones are annotated with the source and raised together as an ExceptionGroup,
+    which the calling job logs once with every traceback.
     """
+    message = f"published inference failed for project {project_id}"
     unexpected = []
     for entry in bindings(project_id):
         source = entry["source"]
@@ -185,13 +201,14 @@ def score_project(project_id, *, client=None):
         except SOURCE_ERRORS:
             logger.exception("Published inference failed for source=%s", source)
         except MemoryError:
+            if unexpected:  # the group is never raised, so report it here
+                logger.error(message, exc_info=ExceptionGroup(message, unexpected))
             raise
         except Exception as exc:
-            logger.exception("Unexpected published inference failure for source=%s", source)
             exc.add_note(f"source={source}")
             unexpected.append(exc)
     if unexpected:
-        raise ExceptionGroup(f"published inference failed for project {project_id}", unexpected)
+        raise ExceptionGroup(message, unexpected)
 
 
 def train_candidates(project_id):
