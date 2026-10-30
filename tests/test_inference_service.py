@@ -1046,6 +1046,44 @@ def test_non_finite_middle_point_skips_only_affected_observations(long_history):
     assert [sent[1] for sent in client.sent] == [stamps[1], stamps[4]]
 
 
+@pytest.mark.parametrize("metric", ["row_count", "null_rate"])
+def test_text_middle_point_skips_only_affected_observations(long_history, metric):
+    app, config, stamps = long_history
+    set_value(SOURCE, metric, stored_ts(SOURCE, metric)[2], "not-a-number")
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"])
+    adapter.score_project(SOURCE["project_id"], client=client)
+    assert saved(config["bindings"][0]) == [stamps[1], stamps[4]]
+    assert [sent[1] for sent in client.sent] == [stamps[1], stamps[4]]
+    # An older corrupt point must not prevent a valid latest UI prediction.
+    result = adapter.predict(SOURCE, config["bindings"][0]["model_version"], "1.0.0", client=client)
+    assert result["observed_at"] == stamps[4]
+
+
+@pytest.mark.parametrize("value", ["not-a-number", float("inf"), float("-inf")])
+def test_metrics_rejects_invalid_stored_numbers_with_strict_json(ui, value):
+    _, http, _ = ui
+    set_value(SOURCE, "row_count", stored_ts(SOURCE)[-1], value)
+    response = http.get("/api/inference/metrics", query_string=SOURCE)
+    assert response.status_code == 422
+    assert response.json == {"error": {"code": "invalid_history", "message": "invalid_history"}}
+    json.dumps(response.json, allow_nan=False)
+    assert "not-a-number" not in response.text and "Infinity" not in response.text
+
+
+def test_metrics_rejects_postgres_nan_with_strict_json(ui, monkeypatch):
+    _, http, _ = ui
+    original = source_storage.metrics
+
+    def with_nan(*args, **kwargs):
+        rows = original(*args, **kwargs)
+        return [*rows[:-1], {**rows[-1], "value": float("nan")}]
+
+    monkeypatch.setattr(source_storage, "metrics", with_nan)
+    response = http.get("/api/inference/metrics", query_string=SOURCE)
+    assert response.status_code == 422
+    json.dumps(response.json, allow_nan=False)
+
+
 def test_source_level_refusal_stops_remaining_observations(long_history):
     app, config, stamps = long_history
     client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"], reject=stamps[2], status=503)

@@ -6,7 +6,7 @@ from jsonschema import ValidationError
 
 from app import inference_adapter as adapter
 from app import source_storage
-from ml.inference_contract import validator
+from ml.inference_contract import FiniteValidator, validator
 
 bp = Blueprint("inference_api", __name__, url_prefix="/api/inference")
 
@@ -102,4 +102,7 @@ def metrics():
     metric = request.args.get("metric", "row_count")
     if metric not in {"row_count", "null_rate"}:
         raise adapter.AdapterError(422, "invalid_input")
-    return jsonify(source_storage.metrics(source, metric))
+    rows = source_storage.metrics(source, metric)
+    if any(not FiniteValidator.TYPE_CHECKER.is_type(row["value"], "number") for row in rows):
+        raise adapter.AdapterError(422, "invalid_history")
+    return jsonify(rows)

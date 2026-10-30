@@ -74,8 +74,15 @@ def predict(source, model_version, feature_schema_version, *, client=None, obser
         stamp = canonical_ts(observed_at)
         rc = [row for row in rc if row["ts"] <= stamp]
         nr = [row for row in nr if row["ts"] <= stamp]
+    aligned = sorted({r["ts"] for r in rc} & {r["ts"] for r in nr})
+    # Only this pair contributes to the prediction. An older malformed value
+    # must not prevent later healthy pairs from being scored.
+    pair = set(aligned[-2:])
     try:
-        times, rows = build_rows(rc, nr)
+        times, rows = build_rows(
+            [row for row in rc if row["ts"] in pair],
+            [row for row in nr if row["ts"] in pair],
+        )
     except ValueError as exc:
         raise AdapterError(422, "invalid_history") from exc
     if not rows:
@@ -86,7 +93,6 @@ def predict(source, model_version, feature_schema_version, *, client=None, obser
     # JSON has no NaN/Infinity: such history is invalid, not a service failure.
     if not all(math.isfinite(value) for value in features.values()):
         raise AdapterError(422, "invalid_history")
-    aligned = sorted({r["ts"] for r in rc} & {r["ts"] for r in nr})
     payload = {
         "source": source,
         "model_version": model_version,
@@ -161,10 +167,9 @@ def score_source(entry, *, client=None):
     check_binding(entry["model_version"], entry["feature_schema_version"])
     rc = source_storage.metrics(source, "row_count")
     nr = source_storage.metrics(source, "null_rate")
-    try:
-        times, _ = build_rows(rc, nr)
-    except ValueError as exc:
-        raise AdapterError(422, "invalid_history") from exc
+    # Enumerate observations without eagerly validating every feature vector.
+    # predict() validates each pair inside the observation error boundary.
+    times = sorted({row["ts"] for row in rc} & {row["ts"] for row in nr})[1:]
     for stamp in times:
         try:
             predict(
