@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/aleksandr-novikov/ai-integration-development/issues/11",
+  "checked_at_utc": "2026-10-31T17:25:05+00:00",
+  "session": "s20261031-170510-e7e320",
+  "base_sha": "ac0ae04fda308faaf613a3880be84b2d6463f88e",
+  "snapshot_stage": "before_publication",
+  "environment": {
+    "python": "3.12.3",
+    "playwright": "1.61.0",
+    "pytest_playwright": "0.7.0",
+    "chromium": "149.0.7827.55",
+    "scikit_learn": "1.6.1",
+    "numpy": "2.5.4",
+    "pytest": "8.3.4",
+    "coverage": "7.13.5",
+    "ruff": "0.9.4",
+    "docker_cli_available": false,
+    "docker_socket_available": false,
+    "sqlite3_cli_available": false,
+    "make_available": false
+  },
+  "criteria": [
+    {
+      "number": 1,
+      "status": "documented",
+      "evidence": [
+        "STRATEGY.md"
+      ]
+    },
+    {
+      "number": 2,
+      "status": "verified",
+      "evidence": [
+        "tests/test_openapi_contract.py::test_proposed_features_follow_existing_alignment_and_delta_semantics",
+        "tests/test_openapi_contract.py::test_missing_previous_aligned_point_is_not_zero_filled",
+        "tests/test_llm.py::test_parse_nim_response_clamps_confidence",
+        "tests/test_llm.py::test_parse_nim_response_invalid_returns_empty",
+        "tests/test_testing_pipeline.py::test_mock_model_postprocessing_persists_through_api",
+        "tests/test_testing_pipeline.py::test_real_isolation_forest_sqlite_to_api"
+      ]
+    },
+    {
+      "number": 3,
+      "status": "verified",
+      "evidence": [
+        "tests/test_openapi_contract.py",
+        "tests/test_llm.py",
+        "tests/test_telegram.py",
+        "tests/conftest.py::offline_httpx",
+        "tests/test_testing_pipeline.py::test_external_service_transport_is_blocked"
+      ]
+    },
+    {
+      "number": 4,
+      "status": "pending_new_pr_ci",
+      "evidence": [
+        "VERIFICATION.md"
+      ],
+      "limitation": "New SHA checks must be observed after publication; CI E2E is master-only."
+    },
+    {
+      "number": 5,
+      "status": "documented",
+      "evidence": [
+        ".coveragerc",
+        "VERIFICATION.md"
+      ],
+      "gaps": [
+        "ml was missing from coverage source",
+        "No dedicated real model -> SQLite -> API test"
+      ]
+    }
+  ],
+  "checks": {
+    "profile": {
+      "status": "passed_with_existing_xfails",
+      "passed": 181,
+      "xfailed": 3,
+      "exit_code": 0
+    },
+    "default_suite": {
+      "status": "failed_environment",
+      "passed": 1239,
+      "failed": 6,
+      "xfailed": 3,
+      "deselected": 48,
+      "duration_seconds": 356.57,
+      "exit_code": 1,
+      "command": "venv/bin/coverage run -m pytest -q",
+      "failures": [
+        {
+          "tests": [
+            "test_backup_sqlite_produces_dump_and_sha",
+            "test_restore_round_trip_sqlite",
+            "test_restore_refuses_corrupted_dump",
+            "test_restore_refuses_missing_sidecar"
+          ],
+          "file": "tests/test_backup_restore.py",
+          "reason": "sqlite3 CLI missing",
+          "resolved": false
+        },
+        {
+          "tests": [
+            "test_live_demo_cli_requires_connection_id_for_non_legacy",
+            "test_seed_cli_help_contains_project_id"
+          ],
+          "reason": "venv/bin not on PATH; subprocess could not find python",
+          "resolved": true,
+          "recheck": {
+            "passed": 2,
+            "exit_code": 0,
+            "duration_seconds": 2.06
+          }
+        }
+      ]
+    },
+    "browser_e2e": {
+      "status": "passed",
+      "passed": 17,
+      "deselected": 1279,
+      "exit_code": 0
+    },
+    "docker_integration": {
+      "status": "not_run",
+      "reason": "Docker CLI and daemon socket unavailable"
+    },
+    "ruff": {
+      "status": "passed",
+      "exit_code": 0
+    },
+    "pip_check": {
+      "status": "passed",
+      "exit_code": 0
+    },
+    "git_diff_check": {
+      "status": "passed",
+      "exit_code": 0
+    },
+    "coverage_report": {
+      "status": "generated_from_default_suite_with_environment_failures",
+      "source": [
+        "app",
+        "collectors",
+        "ml"
+      ],
+      "branch": true,
+      "totals": {
+        "covered_lines": 4702,
+        "num_statements": 5317,
+        "percent_covered": 86.20084782926473,
+        "percent_covered_display": "86",
+        "missing_lines": 615,
+        "excluded_lines": 91,
+        "percent_statements_covered": 88.4333270641339,
+        "percent_statements_covered_display": "88",
+        "num_branches": 1524,
+        "num_partial_branches": 239,
+        "covered_branches": 1195,
+        "missing_branches": 329,
+        "percent_branches_covered": 78.41207349081365,
+        "percent_branches_covered_display": "78"
+      },
+      "anomaly_detector_percent": 83.66013071895425,
+      "features_percent": 88.67924528301887
+    }
+  },
+  "ci": {
+    "new_sha_observation": "not_published_at_snapshot",
+    "pr_and_master_checks": [
+      "test (3.11)",
+      "test (3.12)",
+      "test (3.13)",
+      "integration",
+      "ruff"
+    ],
+    "e2e": {
+      "condition": "github.event_name == 'push' && github.ref == 'refs/heads/master'",
+      "new_sha_success_verified": false
+    },
+    "coverage_fail_under": null
+  },
+  "branch_protection": {
+    "observed_on": "2026-10-31",
+    "master_endpoint_http": 200,
+    "protected": false,
+    "protection_enabled": false,
+    "enforcement_level": "off",
+    "required_contexts": [],
+    "required_checks": [],
+    "rulesets_endpoint_http": 200,
+    "rulesets": [],
+    "protection_endpoint_http": 401,
+    "administrative_access_verified": false
+  },
+  "known_existing_xfails": [
+    "test_prompt_schema_must_belong_to_current_project",
+    "test_explanation_cache_must_isolate_projects (2 parameter cases)"
+  ],
+  "production_code_changed": false,
+  "workflows_changed": false,
+  "real_nim_or_telegram_calls": false
+}

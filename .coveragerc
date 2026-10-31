@@ -1,5 +1,5 @@
 [run]
-source = app, collectors
+source = app, collectors, ml
 branch = true
 omit =
     tests/*
