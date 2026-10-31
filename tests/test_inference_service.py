@@ -1621,3 +1621,50 @@ def test_pr39_duplicates_on_older_dates_do_not_block_new_scores(ui, age_days):
     adapter.score_project(SOURCE["project_id"], client=client)
     assert saved(config["bindings"][0]) == stamps[3:]
     assert [ts for _, ts in client.sent] == stamps[3:]
+
+
+@pytest.mark.parametrize("route", ["/dashboard/inference", "/api/anomalies/orders"])
+def test_pr39_configuration_failure_outside_inference_blueprint(ui, route):
+    app, http, _ = ui
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    Path(os.environ["INFERENCE_ADAPTER_CONFIG"]).write_text(
+        "{broken configuration with private text"
+    )
+    response = http.get(route)
+    assert response.status_code == 503
+    assert response.json == {"error": "invalid_configuration"}
+    assert "private text" not in response.text
+
+
+@pytest.mark.parametrize("same_version", [True, False])
+def test_pr39_concurrent_model_loads_are_shared_per_key(client, bundles, monkeypatch, same_version):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import inference.service as service
+
+    original = service.load_version
+    cold = []
+    start = threading.Barrier(2)
+    independent = threading.Barrier(2)
+
+    def load(*args, **kwargs):
+        if kwargs.get("cached") is None:
+            cold.append(args[1])
+            if same_version:
+                time.sleep(0.1)  # expose two simultaneous cold loads of one artifact
+            else:
+                independent.wait(timeout=5)  # different keys must not share a load lock
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "load_version", load)
+
+    def request(index):
+        start.wait(timeout=5)
+        return client.post("/v1/predict", json=payload(bundles, version=index), headers=HEADERS)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(request, [0, 0 if same_version else 1]))
+    assert [r.status_code for r in responses] == [200, 200]
+    assert len(cold) == (1 if same_version else 2)

@@ -39,22 +39,34 @@ PostgreSQL/TimescaleDB локально недоступны. CI опублик�
 - Отдельная регрессия времени/score: **1 failed, 0 passed, 117 deselected**.
 - Статическая регрессия Docker context: **1 failed, 0 passed, 0 deselected**.
 
+Две дополнительные регрессии проверили 500 при ошибке конфигурации вне
+`/api/inference`: **2 failed, 0 passed, 121 deselected** до общего Flask-обработчика.
+После исправления — **2 passed, 0 failed, 121 deselected**: контролируемый 503
+без раскрытия конфигурации. После общего Flask-обработчика UI-сценарий объяснения
+повторно проверен в браузере: **1 passed, 0 failed, 0 skipped, 0 deselected**.
+
+При снятии общей блокировки обнаружено дублирование холодной загрузки
+одного артефакта: **1 failed, 1 passed, 123 deselected**. После добавления
+отдельных блокировок по ключу — **2 passed, 0 failed, 123 deselected**; разные
+версии загружаются независимо, целостность продолжает проверяться на cache hit.
+
 Финальные локальные проверки, Python 3.12.3, SQLite CLI 3.45.1,
 `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1`:
 
 | Набор | Passed | Failed | Skipped | Deselected |
 |---|---:|---:|---:|---:|
-| Полный pytest по настройкам проекта | 1365 | 0 | 0 | 52 |
-| FastAPI/Flask, миграция SQLite, LLM, OpenAPI (пять профильных модулей) | 253 | 0 | 0 | 0 |
+| Полный pytest по настройкам проекта | 1369 | 0 | 0 | 52 |
+| FastAPI/Flask, миграция SQLite, LLM, OpenAPI (пять профильных модулей) | 260 | 0 | 0 | 0 |
 | Статическая проверка Docker context | 1 | 0 | 0 | 0 |
 | Дополнительные дубликаты за разные даты | 3 | 0 | 0 | 118 |
 | E2E, настоящий Chromium 141.0.7390.37 / Playwright 1.50.0 | 18 | 0 | 0 | 0 |
 | Попытка локальной PostgreSQL integration до добавления параметра concurrency | 0 | 1 | 0 | 0 |
 
 Последняя строка — ошибка окружения `DockerException: socket not found` до старта
-PostgreSQL. Один полный повтор был прерван без итоговой сводки при заполнении временного
-хранилища тестовыми артефактами. Завершённые артефакты очищены, финальный
-прогон использует отдельный каталог на дисковом хранилище.
+PostgreSQL. Повторы столкнулись с заполнением временного хранилища тестовыми артефактами:
+один прерван без сводки, ещё один дал 1339 passed / 8 failed / 22 errors /
+52 deselected при Errno 28. Завершённые артефакты очищены; финальный успешный
+прогон использовал отдельный каталог на дисковом хранилище.
 
 В тест миграции дополнительно включён параллельный запуск трёх
 инициализаторов; он требует реального PostgreSQL.
@@ -80,7 +92,7 @@ Swagger также остановился на загрузке внешнего
 - Реальный `stage-export` из архивного baseline #9 в чистом venv. Артефакт создан
   вне репозитория, admission не подменён: модель остаётся demo/rejected.
 - Все три маршрута через настоящий Swagger UI и uvicorn; 100/100 HTTP predictions,
-  0 failures, p95 **37.224 ms**. [Результаты и все samples](evidence/review-acceptance-smoke.json).
+  0 failures, p95 **34.892 ms**. [Результаты и все samples](evidence/review-acceptance-smoke.json).
 - Четыре недопустимых RFC 3339 timestamp отклонены в чистом export/runtime venv.
 
 В pytest остаются предупреждения зависимостей (NumPy/skops, Sentry,
@@ -112,7 +124,7 @@ SLA или универсальная пропускная способност�
 
 ## Изменённые файлы
 
-- `app/api.py`, `app/inference_api.py`: разрешение source, HTTP-ошибки истории,
+- `app/app.py`, `app/api.py`, `app/inference_api.py`: разрешение source, HTTP-ошибки истории,
   активные версии основного API, роль перед записью предсказания.
 - `app/source_storage.py`: доступ к истории, актуальность подключений,
   нормализация, карантин повреждённых наблюдений и атомарная вставка score.
@@ -125,7 +137,7 @@ SLA или универсальная пропускная способност�
 - `collectors/per_project.py`, `collectors/scheduler.py`: контролируемые ошибки
   конфигурации и независимость заданий проектов.
 - `inference/service.py`: лимиты JSON, ранняя проверка registry_path, единый
-  error envelope и сокращённая блокировка кэша модели.
+  error envelope и отдельные блокировки загрузки по ключу модели/источника.
 - `ml/inference_contract.py`: кэш валидаторов и защищённая копия OpenAPI-документа.
 - `.dockerignore`, `Dockerfile`: включение и build-time проверка контракта.
 - `requirements-inference.txt`, `requirements-model-export.txt`,
@@ -139,7 +151,8 @@ SLA или универсальная пропускная способност�
   функциональные, security, packaging и конкурентные migration-регрессии.
 - `tests/e2e/conftest.py`, `tests/e2e/test_inference_explain_ui.py`: выбор браузера
   и реальный UI-сценарий объяснения.
-- `docs/course/api/inference.openapi.yaml`, `docs/course/api/README.md`: лимиты JSON и ответ 413.
+- `docs/course/api/inference.openapi.yaml`, `docs/course/api/legacy.openapi.yaml`,
+  `docs/course/api/README.md`: лимиты JSON, ответ 413 и отказ конфигурации 503.
 - `docs/course/inference/README.md`, `migrations.md`, этот отчёт и два новых
   JSON evidence: фактическое поведение, backup/restore, проверки и замеры.
 - Исторические `evidence/pr39-quality.json`, `review-fixes.json`,

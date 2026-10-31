@@ -8,6 +8,7 @@ import secrets
 import threading
 from collections import OrderedDict
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -61,6 +62,7 @@ def create_app(config=None):
     model_validator = validator("ModelRequest")
     cache = OrderedDict()
     cache_lock = threading.Lock()
+    load_locks = WeakValueDictionary()
 
     @app.exception_handler(ApiError)
     async def api_error(request, exc):
@@ -152,19 +154,27 @@ def create_app(config=None):
         try:
             key = (payload["model_version"], tuple(sorted(payload["source"].items())))
             with cache_lock:
-                cached = cache.get(key)
-            loaded = load_version(
-                config["registry_path"],
-                payload["model_version"],
-                source=payload["source"],
-                demo=config.get("demo", False),
-                cached=cached,
-            )
-            with cache_lock:
-                cache[key] = loaded
-                cache.move_to_end(key)
-                if len(cache) > 16:
-                    cache.popitem(last=False)
+                load_lock = load_locks.get(key)
+                if load_lock is None:
+                    load_lock = threading.Lock()
+                    load_locks[key] = load_lock
+            # Only the same artifact serializes. Weak entries disappear when
+            # the last loader/waiter leaves, independent of LRU eviction.
+            with load_lock:
+                with cache_lock:
+                    cached = cache.get(key)
+                loaded = load_version(
+                    config["registry_path"],
+                    payload["model_version"],
+                    source=payload["source"],
+                    demo=config.get("demo", False),
+                    cached=cached,
+                )
+                with cache_lock:
+                    cache[key] = loaded
+                    cache.move_to_end(key)
+                    if len(cache) > 16:
+                        cache.popitem(last=False)
             return loaded
         except RegistryError:
             raise ApiError(503, "model_unavailable") from None
