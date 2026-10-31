@@ -783,14 +783,19 @@ def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:
     on the fly. ``InsufficientDataError`` is the "we don't have enough
     history yet" signal, treated as silent skip.
     """
-    from app.inference_adapter import is_served, score_project
+    from app.inference_adapter import AdapterError, bindings, score_project
 
-    if any(is_served(project_id, name) for name in table_names):
+    try:
+        served = {e["source"]["table_name"] for e in bindings(project_id)}
+    except AdapterError:
+        logger.exception("[project=%s] invalid inference configuration", project_id)
+        return
+    if served.intersection(table_names):
         try:
             score_project(project_id)
         except Exception:
             logger.exception("[project=%s] published inference failed", project_id)
-        table_names = [name for name in table_names if not is_served(project_id, name)]
+        table_names = [name for name in table_names if name not in served]
     cfg = _load_telegram_config(project_id)
     if cfg is None:
         logger.debug(

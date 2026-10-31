@@ -54,6 +54,12 @@ paths:
                   feature_schema_version: {$ref: '#/components/schemas/FeatureSchemaVersion'}
                   demo: {type: boolean}
                   quality_admitted: {type: boolean}
+        '413':
+          description: JSON body exceeds 64 KiB (maximum nesting depth is 32)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '400': {description: invalid_json}
         '401': {description: authentication_required}
         '403': {description: source_forbidden}
@@ -85,7 +91,7 @@ paths:
         coerce-booleans: false
       x-validation-order:
         - '401: проверить сервисный токен'
-        - '415/400: проверить Content-Type и строго декодировать JSON'
+        - '415/413/400: проверить Content-Type, размер/глубину тела и строго декодировать JSON'
         - '422: проверить структуру, типы и ограничения полей'
         - '403: проверить доступ к полному source'
         - '409: проверить поддержку feature_schema_version сервисом'
@@ -124,6 +130,12 @@ paths:
                 score: -0.12
                 threshold: 0
                 is_anomaly: true
+        '413':
+          description: JSON body exceeds 64 KiB (maximum nesting depth is 32)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '400':
           description: Неразбираемый JSON, NaN/Infinity/-Infinity или переполнение binary64
           content:

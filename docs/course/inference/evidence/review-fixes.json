@@ -8,18 +8,6 @@
     "36": "MERGED",
     "37": "MERGED"
   },
-  "merge_check": {
-    "command": "git merge-tree --write-tree a78536bcff77a08276a2ce0f0ccf5f3455262bb8 ac0ae04fda308faaf613a3880be84b2d6463f88e",
-    "exit_code": 0,
-    "tree": "bb527c62ba73426c75f4656b59fe7063d708a326",
-    "tree_matches_original_pr": true,
-    "original_divergence": {
-      "pr_only_commits": 3,
-      "master_only_commits": 1
-    },
-    "github_mergeable": false,
-    "note": "GitHub reports false; local merge against the fetched master has no conflicts or additional tree changes. No remote branch was changed."
-  },
   "environment": {
     "python": "3.12.3",
     "ruff": "0.9.4",
@@ -100,10 +88,5 @@
       "app/source_storage.py": "e529402c861e9b55d6b161c85bce0b27b6937bf0ece1028c5bcc34c33917ae11",
       "tests/test_inference_service.py": "9d1eaea56b9fb4d839ea856af47512770547c14f0203b27cce375e263bf48131"
     }
-  },
-  "publication": {
-    "prepare": "refused by VDS2: updating a branch outside vds/ requires separate administrator permission for this PR",
-    "alternate_pr": "Installed publisher uses a trusted fixed base; no supported option to create a fix-only PR targeting course/inference-service",
-    "new_commit_ci": "Cannot run GitHub Actions until safe publication is available"
   }
 }

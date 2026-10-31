@@ -15,8 +15,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ml.course_experiments import evaluate
-
 TARGETS = {"event_recall": 0.8, "false_positive_rate": 0.1, "abrupt_median_delay_ticks": 1.0}
 # Trusted identity of the frozen #9 export, recorded before this audit.
 # --archive may relocate the same bytes; it cannot select another experiment.
@@ -40,6 +38,8 @@ def quality_gate(metrics):
 
 def audit_predictions(predictions, events, manifest):
     """Point metrics within slices; per-kind FPR shares the same normal rows."""
+    from ml.course_experiments import evaluate
+
     split = "test"
     interval = manifest["config"]["interval_minutes"]
     overall, details = evaluate(predictions, events, split, interval)

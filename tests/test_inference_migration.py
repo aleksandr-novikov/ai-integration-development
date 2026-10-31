@@ -8,7 +8,7 @@ from app import metrics_storage as storage
 from app import source_storage
 
 
-def exercise_migration(engine, *, postgres=False):
+def exercise_migration(engine, *, postgres=False, concurrent=False):
     timestamp_type = "TIMESTAMPTZ" if postgres else "TEXT"
     float_type = "DOUBLE PRECISION" if postgres else "REAL"
     stamp = datetime.now(UTC).isoformat()
@@ -35,7 +35,20 @@ def exercise_migration(engine, *, postgres=False):
             ),
             {"ts": stamp},
         )
-    storage._apply_schema(engine)
+    if concurrent:
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        barrier = Barrier(3)
+
+        def migrate(_):
+            barrier.wait(timeout=10)
+            storage._apply_schema(engine)
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            list(pool.map(migrate, range(3)))
+    else:
+        storage._apply_schema(engine)
     storage._apply_schema(engine)
     with engine.connect() as conn:
         old = conn.execute(

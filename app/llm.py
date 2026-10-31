@@ -19,6 +19,13 @@ from app.metrics_storage import (
     get_metrics,
     get_schema_snapshot,
 )
+from ml.inference_contract import canonical_ts
+
+
+def _timestamp(value):
+    if isinstance(value, datetime):
+        value = value.isoformat()
+    return datetime.fromisoformat(canonical_ts(value))
 
 
 def _context_window(ts: str) -> timedelta:
@@ -112,8 +119,8 @@ def _build_prompt(
 
     # Limit context to rows at or before ts so the LLM sees the state
     # at the moment of the anomaly, not current state.
-    recent_rc = [r for r in recent_rc if r["ts"] <= ts]
-    recent_nr = [r for r in recent_nr if r["ts"] <= ts]
+    recent_rc = [r for r in recent_rc if _timestamp(r["ts"]) <= _timestamp(ts)]
+    recent_nr = [r for r in recent_nr if _timestamp(r["ts"]) <= _timestamp(ts)]
 
     def _fmt(raw_ts: str) -> str:
         return raw_ts[:16].replace("T", " ") + " UTC"
@@ -129,7 +136,7 @@ def _build_prompt(
         for c in changepoints
     ) or "  none"
     anomaly_at_ts = next(
-        (a for a in anomaly_scores if a["ts"] == ts and a["is_anomaly"]), None
+        (a for a in anomaly_scores if _timestamp(a["ts"]) == _timestamp(ts) and a["is_anomaly"]), None
     )
     anomaly_score_text = (
         f"{anomaly_at_ts['score']:.4f}" if anomaly_at_ts else "not available"
@@ -275,8 +282,8 @@ def _rule_based_explain(
 
     # Use only rows up to and including ts so the comparison reflects
     # conditions at the moment of the anomaly, not current state.
-    recent_rc = [r for r in all_rc if r["ts"] <= ts]
-    recent_nr = [r for r in all_nr if r["ts"] <= ts]
+    recent_rc = [r for r in all_rc if _timestamp(r["ts"]) <= _timestamp(ts)]
+    recent_nr = [r for r in all_nr if _timestamp(r["ts"]) <= _timestamp(ts)]
 
     if metric == "row_count" and len(recent_rc) >= 2:
         prev_val = recent_rc[-2]["value"]
@@ -346,7 +353,7 @@ def explain_anomaly(
         from app.source_storage import context_source
 
         try:
-            source = context_source(project_id, table)
+            source = context_source(project_id, table, ts, metric)
         except ValueError:
             return {"explanation": "Источник данных неоднозначен или недоступен. Требуется ручная проверка.",
                     "suggested_fix": "Выберите подключение и схему таблицы.", "confidence": 0.3}

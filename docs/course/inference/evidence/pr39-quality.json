@@ -1,6 +1,6 @@
 {
   "recorded_at": "2026-10-30T17:45:34.433550+00:00",
-  "scope": "PR #39 source changes in this commit, on ccfc434; master was not merged. GitHub observations below precede publication.",
+  "scope": "Historical local verification of N-5/N-6 on ccfc434; superseded by the current review report.",
   "pr": "https://github.com/aleksandr-novikov/ai-integration-development/pull/39",
   "source_parent": "ccfc43485ccdbd111af44d54d3c10232e09d7162",
   "master_head": "ac0ae04fda308faaf613a3880be84b2d6463f88e",
@@ -19,8 +19,8 @@
       "mlflow": "3.16.1",
       "pyiceberg": "0.12.0"
     },
-    "dependencies": "requirements.txt and requirements-dev.txt in .git/venv; portable Ubuntu SQLite CLI 3.45.1 in .git/sqlite-tools; no system installation",
-    "execution": "Sequential; OPENBLAS_NUM_THREADS=1, OMP_NUM_THREADS=1; VDS2 limits unchanged"
+    "dependencies": "Project requirements and development dependencies; portable SQLite CLI 3.45.1",
+    "execution": "OPENBLAS_NUM_THREADS=1, OMP_NUM_THREADS=1"
   },
   "fixes": {
     "N-5": "Enumerate aligned times, validate each prediction pair separately. A corrupt SQLite value affects its own pair and the following pair; subsequent healthy pairs and a healthy latest UI prediction succeed. Shared training feature validation is unchanged.",
@@ -71,7 +71,7 @@
       "selected": 32,
       "setup_errors": 1,
       "remaining_not_attempted": 31,
-      "reason": "DockerException: Docker socket is absent in the VDS2 sandbox; no live databases were started."
+      "reason": "Docker socket unavailable; no live databases were started."
     },
     "e2e": {
       "command": "python -m pytest -m e2e -q -x --tb=short",
@@ -99,42 +99,7 @@
     "pip_check": "passed",
     "git_diff_check": "passed"
   },
-  "integration_diagnosis": {
-    "merge_bases": [
-      "6ffaa6b2f7d5b41e92d7174898b4e06554fb871e",
-      "686ffa2a81f667edd3228e8e694e4ed73b956123"
-    ],
-    "registry_at_686ffa2_equals_master": true,
-    "pr_bootstrap_commit": "d15962bb9b0cb3f064dbb45f496fb8557f040b66",
-    "pr_bootstrap_tree_equals_master": "5a8dbe70286756f2639b9416011b0ac85ea543cf",
-    "registry_changes_relative_to_686ffa2": "PR adds inspect_version() and optional cached argument; master has no registry changes against this base. The original single-base add/add diagnosis was incomplete.",
-    "github_before_publication": {
-      "mergeable": false,
-      "mergeable_state": "dirty",
-      "reported_base": "6ffaa6b2f7d5b41e92d7174898b4e06554fb871e",
-      "stale_merge_ref": "c787f753da9b82154888860b6a7f5843099f3def",
-      "stale_merge_ref_parents": [
-        "6ffaa6b2f7d5b41e92d7174898b4e06554fb871e",
-        "a78536bcff77a08276a2ce0f0ccf5f3455262bb8"
-      ]
-    },
-    "resolution_status": "No merge or history rewrite performed. Recheck GitHub after ordinary publication. If dirty persists, an administrator-approved VDS2 synchronization is required; current CLI has no sync verb and standing policy forbids merge."
-  },
-  "ci_before_publication": {
-    "ccfc434_runs": 0,
-    "reader_status_check_rollup": [],
-    "workflows": "lint and tests are active, triggered by pull_request, push restricted to master. GitHub suppresses pull_request workflows with merge conflicts.",
-    "github_documentation": "https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request",
-    "historical_only": {
-      "sha": "a78536bcff77a08276a2ce0f0ccf5f3455262bb8",
-      "tests": "https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/40253183513",
-      "lint": "https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/40253183662",
-      "conclusion": "success; CI E2E skipped by master-only condition"
-    },
-    "current_head_ci": "Not established by this pre-publication report; consult the updated PR description for final publication checks."
-  },
   "remaining_limits": [
-    "No post-synchronization tests; current GitHub conflict and CI state require confirmation.",
     "Local integration and E2E could not execute past setup.",
     "Only Python 3.12 available locally; 3.11/3.13 require current CI.",
     "No live NIM/Telegram, production DB, Docker deployment or new Swagger/latency run.",

@@ -1,0 +1,179 @@
+{
+  "baseline_ref": "db88c2aa90b8e8dc0c276bd371101b64b9e10a1f",
+  "method": "Earlier adapter and validator versus current; common production history reader, temporary SQLite, deterministic HTTP response; excludes model execution and network latency. One sample per scenario, not SLA.",
+  "history": "15-minute spacing; 2880 stored points, 2874 scorable pairs inside 30 days at first tick; same cutoff policy before and after.",
+  "before": {
+    "96x1": {
+      "initial": {
+        "seconds": 4.950442,
+        "http_calls": 95
+      },
+      "repeat": {
+        "seconds": 4.454492,
+        "http_calls": 95
+      },
+      "two_new": {
+        "seconds": 4.344606,
+        "http_calls": 97
+      }
+    },
+    "384x1": {
+      "initial": {
+        "seconds": 21.28317,
+        "http_calls": 383
+      },
+      "repeat": {
+        "seconds": 20.414089,
+        "http_calls": 383
+      },
+      "two_new": {
+        "seconds": 24.192573,
+        "http_calls": 385
+      }
+    },
+    "2880x1": {
+      "initial": {
+        "seconds": 312.009115,
+        "http_calls": 2874
+      },
+      "repeat": {
+        "seconds": 308.006064,
+        "http_calls": 2874
+      },
+      "two_new": {
+        "seconds": 287.178794,
+        "http_calls": 2876
+      }
+    },
+    "96x3": {
+      "initial": {
+        "seconds": 13.74822,
+        "http_calls": 285
+      },
+      "repeat": {
+        "seconds": 14.993712,
+        "http_calls": 285
+      },
+      "two_new": {
+        "seconds": 13.723703,
+        "http_calls": 291
+      }
+    }
+  },
+  "after": {
+    "96x1": {
+      "initial": {
+        "seconds": 0.143367,
+        "http_calls": 95
+      },
+      "repeat": {
+        "seconds": 0.004251,
+        "http_calls": 0
+      },
+      "two_new": {
+        "seconds": 0.006786,
+        "http_calls": 2
+      }
+    },
+    "384x1": {
+      "initial": {
+        "seconds": 0.431038,
+        "http_calls": 383
+      },
+      "repeat": {
+        "seconds": 0.008602,
+        "http_calls": 0
+      },
+      "two_new": {
+        "seconds": 0.011061,
+        "http_calls": 2
+      }
+    },
+    "2880x1": {
+      "initial": {
+        "seconds": 3.789326,
+        "http_calls": 2874
+      },
+      "repeat": {
+        "seconds": 0.067491,
+        "http_calls": 0
+      },
+      "two_new": {
+        "seconds": 0.087367,
+        "http_calls": 2
+      }
+    },
+    "96x3": {
+      "initial": {
+        "seconds": 0.353747,
+        "http_calls": 285
+      },
+      "repeat": {
+        "seconds": 0.015159,
+        "http_calls": 0
+      },
+      "two_new": {
+        "seconds": 0.030086,
+        "http_calls": 6
+      }
+    }
+  },
+  "earlier_paired_after_sample": {
+    "96x1": {
+      "initial": {
+        "seconds": 0.177543,
+        "http_calls": 95
+      },
+      "repeat": {
+        "seconds": 0.002844,
+        "http_calls": 0
+      },
+      "two_new": {
+        "seconds": 0.00585,
+        "http_calls": 2
+      }
+    },
+    "384x1": {
+      "initial": {
+        "seconds": 0.623801,
+        "http_calls": 383
+      },
+      "repeat": {
+        "seconds": 0.009197,
+        "http_calls": 0
+      },
+      "two_new": {
+        "seconds": 0.013747,
+        "http_calls": 2
+      }
+    },
+    "2880x1": {
+      "initial": {
+        "seconds": 4.99747,
+        "http_calls": 2874
+      },
+      "repeat": {
+        "seconds": 0.084895,
+        "http_calls": 0
+      },
+      "two_new": {
+        "seconds": 0.084583,
+        "http_calls": 2
+      }
+    },
+    "96x3": {
+      "initial": {
+        "seconds": 0.555323,
+        "http_calls": 285
+      },
+      "repeat": {
+        "seconds": 0.015343,
+        "http_calls": 0
+      },
+      "two_new": {
+        "seconds": 0.026872,
+        "http_calls": 6
+      }
+    }
+  }
+}

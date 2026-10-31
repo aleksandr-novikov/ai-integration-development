@@ -39,7 +39,9 @@ def browser_checks(url, token, payload, output):
 
     results = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        browser = playwright.chromium.launch(
+            executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+        )
         page = browser.new_page(viewport={"width": 1440, "height": 1080})
         page.on("pageerror", lambda error: print(f"Swagger browser error: {error}", flush=True))
         page.on(

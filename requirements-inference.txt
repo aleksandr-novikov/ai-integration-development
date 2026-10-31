@@ -8,3 +8,4 @@ skops==0.16.0
 PyYAML==6.0.2
 jsonschema==4.23.0
 referencing==0.36.2
+rfc3339-validator==0.1.4

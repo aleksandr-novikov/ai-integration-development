@@ -213,11 +213,10 @@ def _build_project_status(project_id: str, connections: list[dict], has_metrics:
     try:
         from sqlalchemy import text as _text
         with get_engine().connect() as conn:
-            anomalies_7d = conn.execute(_text(
-                "SELECT COUNT(*) FROM anomaly_scores "
-                "WHERE project_id = :pid AND is_anomaly = 1 AND ts >= :since "
-                "AND model_version = 'legacy-unknown' AND feature_schema_version = 'legacy-unknown'"
-            ), {"pid": project_id, "since": since_7d}).scalar() or 0
+            from app.metrics_storage import active_anomaly_scores
+
+            anomalies_7d = sum(row["is_anomaly"] for row in active_anomaly_scores(
+                project_id, window=timedelta(days=7)))
             schema_changes_7d = conn.execute(_text(
                 "SELECT COUNT(*) FROM schema_events "
                 "WHERE project_id = :pid AND ts >= :since"
@@ -310,10 +309,10 @@ def _ml_last_runs(project_id: str) -> dict[str, str | None]:
         "drift": None,
     }
     with get_engine().connect() as conn:
-        out["isolation_forest"] = conn.execute(
-            text("SELECT MAX(ts) FROM anomaly_scores WHERE project_id = :project_id AND model_version = 'legacy-unknown' AND feature_schema_version = 'legacy-unknown'"),
-            {"project_id": project_id},
-        ).scalar()
+        from app.metrics_storage import active_anomaly_scores
+
+        scores = active_anomaly_scores(project_id)
+        out["isolation_forest"] = max((r["ts"] for r in scores), default=None)
         out["pelt"] = conn.execute(
             text("""
                 SELECT MAX(detected_at)

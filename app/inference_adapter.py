@@ -1,9 +1,11 @@
 """Authenticated Flask/background caller. History never enters the ASGI service."""
 
+import itertools
 import json
 import logging
 import math
 import os
+from contextlib import nullcontext
 from pathlib import Path
 
 import httpx
@@ -25,7 +27,13 @@ class AdapterError(ValueError):
 
 # Expected failures of one source: invalid history, service refusals and
 # transient storage errors. They are logged and never stop other sources.
-SOURCE_ERRORS = (AdapterError, source_storage.AmbiguousSourceError, OperationalError, PoolTimeoutError)
+SOURCE_ERRORS = (
+    AdapterError,
+    source_storage.AmbiguousSourceError,
+    source_storage.InvalidHistoryError,
+    OperationalError,
+    PoolTimeoutError,
+)
 # Refusals tied to one observation; later observations stay scorable.
 OBSERVATION_ERRORS = frozenset({"invalid_history", "insufficient_history", "invalid_input"})
 
@@ -34,15 +42,45 @@ def configuration():
     filename = os.environ.get("INFERENCE_ADAPTER_CONFIG")
     if not filename:
         return {"bindings": []}
-    return json.loads(Path(filename).read_text(encoding="utf-8"))
+    try:
+        config = json.loads(Path(filename).read_text(encoding="utf-8"))
+        if not isinstance(config, dict) or not isinstance(config.get("bindings"), list):
+            raise ValueError("bindings must be an array")
+        if type(config.get("demo", False)) is not bool:
+            raise ValueError("demo must be boolean")
+        for entry in config["bindings"]:
+            if not isinstance(entry, dict):
+                raise ValueError("binding must be an object")
+            source = entry.get("source")
+            if not isinstance(source, dict) or not isinstance(source.get("project_id"), str):
+                raise ValueError("binding must identify its project")
+        for key in ("url", "token_env", "candidate_registry_path"):
+            if key in config and (not isinstance(config[key], str) or not config[key]):
+                raise ValueError("invalid configuration field")
+        return config
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.error("Invalid inference adapter configuration")
+        raise AdapterError(503, "invalid_configuration") from None
 
 
 def bindings(project_id):
-    return [
+    entries = [
         entry
         for entry in configuration()["bindings"]
         if entry["source"]["project_id"] == project_id
     ]
+    try:
+        for entry in entries:
+            source_storage.source_params(entry["source"])
+            if not all(key in entry for key in ("model_version", "feature_schema_version")):
+                raise ValueError("missing binding versions")
+        identities = [tuple(sorted(entry["source"].items())) for entry in entries]
+        if len(set(identities)) != len(identities):
+            raise ValueError("duplicate source binding")
+    except (ValueError, KeyError, TypeError):
+        logger.error("Invalid inference bindings for project=%s", project_id)
+        raise AdapterError(503, "invalid_configuration") from None
+    return entries
 
 
 def is_served(project_id, table):
@@ -66,10 +104,23 @@ def check_source(source):
         raise AdapterError(403, "source_forbidden")
 
 
-def predict(source, model_version, feature_schema_version, *, client=None, observed_at=None):
-    check_source(source)
-    rc = source_storage.metrics(source, "row_count")
-    nr = source_storage.metrics(source, "null_rate")
+def predict(
+    source,
+    model_version,
+    feature_schema_version,
+    *,
+    client=None,
+    observed_at=None,
+    _history=None,
+    _background=False,
+    _config=None,
+):
+    if _history is None:
+        check_source(source)
+        rc = source_storage.metrics(source, "row_count")
+        nr = source_storage.metrics(source, "null_rate")
+    else:
+        rc, nr = _history
     if observed_at is not None:
         stamp = canonical_ts(observed_at)
         rc = [row for row in rc if row["ts"] <= stamp]
@@ -101,7 +152,7 @@ def predict(source, model_version, feature_schema_version, *, client=None, obser
         "previous_observed_at": aligned[-2],
         "features": features,
     }
-    config = configuration()
+    config = configuration() if _config is None else _config
     token = os.environ.get(config.get("token_env", "INFERENCE_ADAPTER_TOKEN"), "")
     if not token:
         raise AdapterError(503, "inference_unavailable")
@@ -144,7 +195,11 @@ def predict(source, model_version, feature_schema_version, *, client=None, obser
                 raise ValueError("inference identity mismatch")
     except (ValueError, KeyError, ValidationError):
         raise AdapterError(503, "invalid_inference_response") from None
-    source_storage.save_prediction(result)
+    if _background:
+        if source_storage.insert_prediction(result) and result["is_anomaly"]:
+            _notify_prediction(result)
+    else:
+        source_storage.save_prediction(result)
     return result
 
 
@@ -161,16 +216,46 @@ def check_binding(model_version, feature_schema_version):
         raise AdapterError(422, "invalid_binding") from None
 
 
+def _notify_prediction(result):
+    from app.notifications.telegram import load_project_telegram_config, notify_anomaly
+
+    source = result["source"]
+    cfg = load_project_telegram_config(source["project_id"])
+    if cfg is None:
+        return
+    token, chat, throttle = cfg
+    try:
+        notify_anomaly(
+            source["project_id"],
+            source["table_name"],
+            result["observed_at"],
+            result["score"],
+            bot_token=token,
+            chat_id=chat,
+            throttle_minutes=throttle,
+        )
+    except Exception:
+        logger.exception("Published anomaly notification failed for source=%s", source)
+
+
 def score_source(entry, *, client=None):
-    """Score every stored observation of one configured source."""
+    """Read history once and score only missing versioned observations."""
     source = entry["source"]
     check_binding(entry["model_version"], entry["feature_schema_version"])
-    rc = source_storage.metrics(source, "row_count")
-    nr = source_storage.metrics(source, "null_rate")
-    # Enumerate observations without eagerly validating every feature vector.
-    # predict() validates each pair inside the observation error boundary.
-    times = sorted({row["ts"] for row in rc} & {row["ts"] for row in nr})[1:]
-    for stamp in times:
+    check_source(source)
+    config = configuration()
+    rc = {row["ts"]: row for row in source_storage.metrics(source, "row_count", quarantine=True)}
+    nr = {row["ts"]: row for row in source_storage.metrics(source, "null_rate", quarantine=True)}
+    times = sorted(rc.keys() & nr.keys())
+    existing = {
+        row["ts"]
+        for row in source_storage.scores(
+            source, entry["model_version"], entry["feature_schema_version"]
+        )
+    }
+    for previous, stamp in itertools.pairwise(times):
+        if stamp in existing:
+            continue
         try:
             predict(
                 source,
@@ -178,6 +263,9 @@ def score_source(entry, *, client=None):
                 entry["feature_schema_version"],
                 observed_at=stamp,
                 client=client,
+                _background=True,
+                _config=config,
+                _history=([rc[previous], rc[stamp]], [nr[previous], nr[stamp]]),
             )
         except AdapterError as exc:
             if exc.code not in OBSERVATION_ERRORS:
@@ -199,19 +287,26 @@ def score_project(project_id, *, client=None):
     """
     message = f"published inference failed for project {project_id}"
     unexpected = []
-    for entry in bindings(project_id):
-        source = entry["source"]
-        try:
-            score_source(entry, client=client)
-        except SOURCE_ERRORS:
-            logger.exception("Published inference failed for source=%s", source)
-        except MemoryError:
-            if unexpected:  # the group is never raised, so report it here
-                logger.error(message, exc_info=ExceptionGroup(message, unexpected))
-            raise
-        except Exception as exc:
-            exc.add_note(f"source={source}")
-            unexpected.append(exc)
+    entries = bindings(project_id)
+    manager = (
+        nullcontext(client)
+        if client is not None
+        else httpx.Client(timeout=10, follow_redirects=False, trust_env=False)
+    )
+    with manager as http:
+        for entry in entries:
+            source = entry["source"]
+            try:
+                score_source(entry, client=http)
+            except SOURCE_ERRORS:
+                logger.exception("Published inference failed for source=%s", source)
+            except MemoryError:
+                if unexpected:  # the group is never raised, so report it here
+                    logger.error(message, exc_info=ExceptionGroup(message, unexpected))
+                raise
+            except Exception as exc:
+                exc.add_note(f"source={source}")
+                unexpected.append(exc)
     if unexpected:
         raise ExceptionGroup(message, unexpected)
 
@@ -225,13 +320,28 @@ def train_candidates(project_id):
     if not root:
         return []
     git_sha = os.environ.get("INFERENCE_TRAINING_GIT_SHA", "")
-    return [
-        train_candidate(
-            root,
-            source=entry["source"],
-            row_counts=source_storage.metrics(entry["source"], "row_count"),
-            null_rates=source_storage.metrics(entry["source"], "null_rate"),
-            git_sha=git_sha,
-        )
-        for entry in bindings(project_id)
-    ]
+    results = []
+    unexpected = []
+    for entry in bindings(project_id):
+        source = entry["source"]
+        try:
+            check_source(source)
+            results.append(
+                train_candidate(
+                    root,
+                    source=source,
+                    row_counts=source_storage.metrics(source, "row_count"),
+                    null_rates=source_storage.metrics(source, "null_rate"),
+                    git_sha=git_sha,
+                )
+            )
+        except (ValueError, OperationalError, PoolTimeoutError):
+            logger.exception("Candidate training failed for source=%s", source)
+        except MemoryError:
+            raise
+        except Exception as exc:
+            exc.add_note(f"source={source}")
+            unexpected.append(exc)
+    if unexpected:
+        raise ExceptionGroup("candidate training failed", unexpected)
+    return results

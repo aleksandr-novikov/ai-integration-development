@@ -29,6 +29,8 @@ def _current_project_id() -> str:
     ``g.current_project["id"]`` and 401 on miss.
     """
     project = getattr(g, "current_project", None)
+    if current_user.is_authenticated and project is None:
+        return "__no_project__"
     return project["id"] if project else "legacy"
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -202,6 +204,11 @@ def anomalies(table_name: str):
         return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
     window = _RANGES[range_str]
     project_id = _current_project_id()
+    from app.inference_adapter import bindings
+    from app.metrics_storage import active_anomaly_scores
+
+    if any(entry["source"]["table_name"] == table_name for entry in bindings(project_id)):
+        return jsonify(active_anomaly_scores(project_id, table_name, window))
     scores = get_anomaly_scores(table_name, project_id=project_id, window=window)
     if any(s["is_anomaly"] for s in scores):
         # Attach per-feature values + z-scores so the UI can show which of
@@ -226,7 +233,9 @@ def explain():
     Checks the 24 h cache before calling NIM. On NIM failure, falls back
     to a rule-based explanation (confidence=0.3).
     """
-    from ml.inference_contract import FiniteValidator, canonical_ts
+    from jsonschema import ValidationError
+
+    from ml.inference_contract import FiniteValidator, canonical_ts, validator
 
     from .llm import _context_window, explain_anomaly
 
@@ -241,8 +250,9 @@ def explain():
         return jsonify({"error": "table, metric and ts must be strings"}), 400
     table, metric, ts = body["table"], body["metric"], body["ts"]
     try:
+        validator("Timestamp").validate(ts)
         ts = canonical_ts(ts)
-    except ValueError:
+    except (ValueError, ValidationError):
         return jsonify({"error": "ts must be RFC 3339 with a timezone"}), 400
 
     if not table or not metric or not ts:
@@ -256,6 +266,17 @@ def explain():
     cache_scope = {"project_id": project_id}
     context = {"project_id": project_id}
     source = body.get("source")
+    from app.source_storage import AmbiguousSourceError, InvalidHistoryError, context_source
+
+    if source is None:
+        try:
+            source = context_source(project_id, table, ts, metric)
+        except AmbiguousSourceError:
+            return jsonify({"error": "source_required"}), 409
+        except InvalidHistoryError:
+            return jsonify({"error": "invalid_history"}), 422
+        except ValueError:
+            return jsonify({"error": "source_forbidden"}), 403
     if source is not None:
         from app.inference_adapter import AdapterError
         from app.inference_api import authorized_source
@@ -263,7 +284,7 @@ def explain():
         from app.source_storage import metrics as source_metrics
 
         try:
-            authorized_source(source)
+            authorized_source(source, serving=False)
         except AdapterError as exc:
             return jsonify({"error": exc.code}), exc.status
         if source["table_name"] != table:
@@ -279,6 +300,8 @@ def explain():
                 context_rows.extend(source_metrics(source, context_metric, window=window))
         except AmbiguousSourceError:
             return jsonify({"error": "ambiguous_source"}), 409
+        except InvalidHistoryError:
+            return jsonify({"error": "invalid_history"}), 422
         if any(
             not FiniteValidator.TYPE_CHECKER.is_type(row["value"], "number")
             for row in context_rows
@@ -287,19 +310,6 @@ def explain():
         cache_scope.update(connection_id=source["connection_id"], schema_name=source["schema_name"])
         context["source"] = source
     else:
-        from sqlalchemy import text
-
-        from app.metrics_storage import get_engine
-
-        # A table with collected source identities needs an explicit source.
-        # Never silently collapse two connections into the legacy context.
-        with get_engine().connect() as conn:
-            scoped = conn.execute(text(
-                "SELECT 1 FROM metrics WHERE project_id = :pid AND table_name = :table "
-                "AND connection_id <> 'legacy-unknown' LIMIT 1"
-            ), {"pid": project_id, "table": table}).fetchone()
-        if scoped:
-            return jsonify({"error": "source_required"}), 409
         if not _has_project_table_metrics(table, project_id):
             return jsonify({"error": "table not found"}), 404
     cached = get_cached_explanation(table, metric, ts, **cache_scope)

@@ -8,7 +8,8 @@ from tests.test_inference_migration import exercise_migration
 pytestmark = pytest.mark.integration
 
 
-def test_existing_postgres_is_migrated_without_loss():
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_existing_postgres_is_migrated_without_loss(concurrent):
     from testcontainers.postgres import PostgresContainer
 
     from app import metrics_storage as storage
@@ -18,4 +19,4 @@ def test_existing_postgres_is_migrated_without_loss():
             engine = storage._new_engine()
             storage._engine = engine
             storage._initialized = True
-            exercise_migration(engine, postgres=True)
+            exercise_migration(engine, postgres=True, concurrent=concurrent)

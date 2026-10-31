@@ -4,11 +4,13 @@ import copy
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -157,9 +159,7 @@ def test_cross_field_and_structural_errors(client, bundles, change):
 
 
 @pytest.mark.parametrize("field", ["observed_at", "previous_observed_at"])
-@pytest.mark.parametrize(
-    "stamp", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"]
-)
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
 def test_timestamp_outside_utc_range_returns_invalid_input(client, bundles, field, stamp):
     request = payload(bundles)
     request[field] = stamp
@@ -168,9 +168,7 @@ def test_timestamp_outside_utc_range_returns_invalid_input(client, bundles, fiel
     assert response.json()["error"]["code"] == "invalid_input"
 
 
-@pytest.mark.parametrize(
-    "stamp", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"]
-)
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
 def test_explanation_timestamp_outside_utc_range_is_rejected_before_reads(ui, monkeypatch, stamp):
     def forbidden(*args, **kwargs):
         pytest.fail("invalid timestamp must not read history/cache or call the LLM")
@@ -499,6 +497,9 @@ def test_scoped_llm_context_and_telegram_ambiguity(ui, monkeypatch):
         SOURCE["project_id"],
         connection_id="b",
         schema_name="public",
+    )
+    storage.create_connection(
+        connection_id="b", project_id=SOURCE["project_id"], name="B", dsn_encrypted=b"unused"
     )
     ambiguous = llm.explain_anomaly("orders", "row_count", stamp, SOURCE["project_id"])
     assert ambiguous["confidence"] == 0.3
@@ -1024,19 +1025,19 @@ def test_real_duplicate_in_one_source_does_not_block_others(two_sources, caplog)
     healthy = config["bindings"][1]
     assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1
     assert source_storage.versions(first["source"]) == []
-    assert "AmbiguousSourceError" in caplog.text and "connection-b" in caplog.text
+    assert "ambiguous_source" in caplog.text and "connection-b" in caplog.text
 
 
 def test_unexpected_error_is_reported_after_other_sources(two_sources, monkeypatch):
     app, config, first = two_sources
-    original = source_storage.save_prediction
+    original = source_storage.insert_prediction
 
     def broken(result):
         if result["source"] == first["source"]:
             raise RuntimeError("storage bug")
         return original(result)
 
-    monkeypatch.setattr(source_storage, "save_prediction", broken)
+    monkeypatch.setattr(source_storage, "insert_prediction", broken)
     with pytest.raises(ExceptionGroup) as info:
         adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
     (error,) = info.value.exceptions
@@ -1226,3 +1227,397 @@ def test_scheduler_logs_aggregated_source_failures(two_sources, monkeypatch, cap
     assert [type(e) for e in group.exceptions] == [json.JSONDecodeError]
     healthy = config["bindings"][1]
     assert len(source_storage.scores(SOURCE, healthy["model_version"], "1.0.0")) == 1
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_pr39_explain_without_inference_bindings(ui, monkeypatch, explicit):
+    from app import llm
+
+    _, http, _ = ui
+    monkeypatch.delenv("INFERENCE_ADAPTER_CONFIG")
+    monkeypatch.setattr(llm.settings, "NIM_API_KEY", "")
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    body = {"table": "orders", "metric": "row_count", "ts": stamp}
+    if explicit:
+        body["source"] = SOURCE
+    response = http.post("/api/explain", json=body)
+    assert response.status_code == 200, response.text
+    with storage.get_engine().connect() as conn:
+        cached = conn.execute(text("SELECT project_id, connection_id FROM llm_explanations")).one()
+    assert tuple(cached) == (SOURCE["project_id"], SOURCE["connection_id"])
+
+
+def test_pr39_stale_connection_does_not_own_new_history(ui, monkeypatch):
+    from app import llm
+
+    _, http, _ = ui
+    monkeypatch.setattr(llm.settings, "NIM_API_KEY", "")
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    storage.save_metrics(
+        [{"table_name": "orders", "metric_name": "row_count", "ts": stamp, "value": 999}],
+        SOURCE["project_id"],
+        connection_id="deleted-connection",
+        schema_name="public",
+    )
+    assert (
+        source_storage.context_source(SOURCE["project_id"], "orders", stamp, "row_count") == SOURCE
+    )
+    body = {"table": "orders", "metric": "row_count", "ts": stamp}
+    assert http.post("/api/explain", json=body).status_code == 200
+    body["source"] = {**SOURCE, "connection_id": "deleted-connection"}
+    assert http.post("/api/explain", json=body).status_code == 403
+
+
+@pytest.mark.parametrize("metric", ["row_count", "null_rate"])
+def test_pr39_old_duplicate_only_quarantines_affected_pairs(long_history, metric):
+    app, config, stamps = long_history
+    old = datetime.fromisoformat(stamps[1]).isoformat(timespec="seconds")
+    storage.save_metrics(
+        [{"ts": old, "table_name": "orders", "metric_name": metric, "value": 999}],
+        SOURCE["project_id"],
+        connection_id=SOURCE["connection_id"],
+        schema_name="public",
+    )
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"])
+    adapter.score_project(SOURCE["project_id"], client=client)
+    assert saved(config["bindings"][0]) == stamps[3:]
+    assert [stamp for _, stamp in client.sent] == stamps[3:]
+
+
+@pytest.mark.parametrize("route", ["predict", "metrics", "explain"])
+def test_pr39_invalid_timestamp_is_controlled(ui, route):
+    app, http, config = ui
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    stamp = stored_ts(SOURCE)[-1]
+    with storage.get_engine().begin() as conn:
+        conn.execute(text("UPDATE metrics SET ts='broken-timestamp' WHERE ts=:ts"), {"ts": stamp})
+    if route == "predict":
+        response = http.post("/api/inference/predict", json=config["bindings"][0])
+    elif route == "metrics":
+        response = http.get("/api/inference/metrics", query_string=SOURCE)
+    else:
+        response = http.post(
+            "/api/explain",
+            json={"source": SOURCE, "table": "orders", "metric": "row_count", "ts": stamp},
+        )
+    assert response.status_code == 422, response.text
+    error = response.json["error"]
+    assert (error["code"] if isinstance(error, dict) else error) == "invalid_history"
+
+
+def test_pr39_background_skips_malformed_timestamp(long_history):
+    app, config, stamps = long_history
+    with storage.get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE metrics SET ts='broken-timestamp' WHERE ts=:ts"),
+            {"ts": stored_ts(SOURCE)[0]},
+        )
+    adapter.score_project(SOURCE["project_id"], client=app.config["INFERENCE_HTTP_CLIENT"])
+    assert saved(config["bindings"][0]) == stamps[2:]
+
+
+def test_pr39_incremental_scoring_and_notifications(long_history, monkeypatch):
+    from app.notifications import telegram
+
+    app, config, stamps = long_history
+    notifications = []
+    monkeypatch.setattr(
+        telegram, "load_project_telegram_config", lambda pid: ("synthetic", "chat", 1)
+    )
+    monkeypatch.setattr(
+        telegram, "notify_anomaly", lambda *args, **kwargs: notifications.append(args)
+    )
+
+    class Anomalies(RecordingClient):
+        def post(self, url, json=None, **kwargs):
+            self.sent.append((json["source"]["connection_id"], json["observed_at"]))
+            return httpx.Response(
+                200,
+                json={
+                    **{
+                        key: json[key]
+                        for key in (
+                            "source",
+                            "model_version",
+                            "feature_schema_version",
+                            "observed_at",
+                        )
+                    },
+                    "score": -0.5,
+                    "threshold": 0.0,
+                    "is_anomaly": True,
+                    "demo": True,
+                },
+            )
+
+    client = Anomalies(None)
+    entry = config["bindings"][0]
+    adapter.score_project(SOURCE["project_id"], client=client)
+    assert len(client.sent) == len(stamps) - 1
+    assert len(notifications) == len(stamps) - 1
+    adapter.score_project(SOURCE["project_id"], client=client)
+    assert len(client.sent) == len(stamps) - 1
+    assert len(notifications) == len(stamps) - 1
+    assert (
+        source_storage.insert_prediction(
+            {
+                **source_storage.scores(SOURCE, entry["model_version"], "1.0.0")[-1],
+                "observed_at": stamps[-1],
+            }
+        )
+        is False
+    )
+    # Main screens see exactly the currently configured pair, with legacy separate.
+    storage.save_anomaly_scores(
+        [{"ts": stamps[-1], "table_name": "orders", "score": -9, "is_anomaly": 1}],
+        SOURCE["project_id"],
+    )
+    active = storage.active_anomaly_scores(SOURCE["project_id"])
+    assert len(active) == len(stamps) - 1
+    assert all(r["model_version"] == entry["model_version"] for r in active)
+    aggregate = storage.build_history_aggregate(SOURCE["project_id"])
+    assert sum(aggregate["anomalies_by_ts"].values()) == len(stamps) - 1
+    assert all(count == 1 for count in aggregate["anomalies_by_ts"].values())
+    assert len(aggregate["timestamps"]) == len(stamps)
+    # A new model must backfill independently; rollback must reuse prior results.
+    filename = Path(os.environ["INFERENCE_ADAPTER_CONFIG"])
+    config["bindings"][0]["model_version"] = "new-version"
+    filename.write_text(json.dumps(config))
+    adapter.score_project(SOURCE["project_id"], client=client)
+    assert len(client.sent) == 2 * (len(stamps) - 1)
+    assert {r["model_version"] for r in storage.active_anomaly_scores(SOURCE["project_id"])} == {
+        "new-version"
+    }
+
+
+@pytest.mark.parametrize("route", ["/v1/predict", "/v1/model"])
+@pytest.mark.parametrize(
+    "raw,status",
+    [("[" * 2000 + "]" * 2000, 400), ('{"x":"' + "a" * 65536 + '"}', 413)],
+    ids=["too-deep", "too-large"],
+)
+def test_pr39_request_resource_limits(client, route, raw, status):
+    response = client.post(
+        route, content=raw, headers={**HEADERS, "Content-Type": "application/json"}
+    )
+    assert response.status_code == status
+    assert set(response.json()) == {"error"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["2026-10-30 12:31:00Z", "20261030T123100Z", "2026-10-30T12:31:00", "2026-10-30T25:00:00Z"],
+)
+def test_pr39_strict_rfc3339(value):
+    from jsonschema import ValidationError
+
+    with pytest.raises(ValidationError):
+        validator("Timestamp").validate(value)
+
+
+def test_pr39_viewer_cannot_persist_predictions(ui):
+    _, http, config = ui
+    storage.create_user("viewer", "viewer@example.test", "unused")
+    storage.add_project_member(SOURCE["project_id"], "viewer", "viewer")
+    with http.session_transaction() as session:
+        session["_user_id"] = "viewer"
+    assert http.post("/api/inference/predict", json=config["bindings"][0]).status_code == 403
+    assert source_storage.versions(SOURCE) == []
+
+
+def test_pr39_legacy_llm_uses_typed_time_and_score(monkeypatch):
+    from app import llm
+
+    stamp = "2026-10-30T12:31:31+00:00"
+    monkeypatch.setattr(llm, "get_schema_snapshot", lambda *a, **kw: [])
+    monkeypatch.setattr(llm, "get_changepoints", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        llm,
+        "get_metrics",
+        lambda *a, **kw: [
+            {"ts": "2026-10-30T12:30:31.000000+00:00", "value": 100},
+            {"ts": "2026-10-30T12:31:31.000000+00:00", "value": 7},
+            {"ts": "2026-10-30T12:32:31+00:00", "value": 999},
+        ],
+    )
+    monkeypatch.setattr(
+        llm,
+        "get_anomaly_scores",
+        lambda *a, **kw: [
+            {"ts": "2026-10-30T15:31:31.000000+03:00", "score": -0.1234, "is_anomaly": True}
+        ],
+    )
+    prompt = llm._build_prompt("orders", "row_count", stamp)
+    assert "12:31 UTC: 7" in prompt and "-0.1234" in prompt
+    assert "999" not in prompt
+    assert "с 100 до 7" in llm._rule_based_explain("orders", "row_count", stamp)["explanation"]
+
+
+def test_pr39_training_one_source_does_not_block_second(two_sources, tmp_path, monkeypatch):
+    _, config, first = two_sources
+    config["candidate_registry_path"] = str(tmp_path / "candidates")
+    Path(os.environ["INFERENCE_ADAPTER_CONFIG"]).write_text(json.dumps(config))
+    calls = []
+
+    def train(root, *, source, **kwargs):
+        calls.append(source)
+        if source == first["source"]:
+            raise registry.RegistryError("insufficient data")
+        return {"source": source, "model_version": "candidate"}
+
+    monkeypatch.setattr(registry, "train_candidate", train)
+    assert adapter.train_candidates(SOURCE["project_id"]) == [
+        {"source": SOURCE, "model_version": "candidate"}
+    ]
+    assert calls == [first["source"], SOURCE]
+
+
+def test_pr39_delete_project_cleans_scoped_data_only(ui):
+    _, _, config = ui
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    source_storage.save_snapshot(SOURCE, [])
+    storage.save_explanation(
+        "orders",
+        "row_count",
+        stamp,
+        "test",
+        "fix",
+        0.5,
+        project_id=SOURCE["project_id"],
+        connection_id=SOURCE["connection_id"],
+        schema_name="public",
+    )
+    storage.save_explanation("orders", "row_count", stamp, "other", "fix", 0.5, project_id="other")
+    storage.save_anomaly_scores(
+        [{"ts": stamp, "table_name": "orders", "score": -1, "is_anomaly": True}],
+        SOURCE["project_id"],
+    )
+    assert storage.delete_project("wrong-owner", SOURCE["project_id"]) is False
+    assert storage.delete_project("u", SOURCE["project_id"]) is True
+    with storage.get_engine().connect() as conn:
+        from sqlalchemy import inspect
+
+        for table in inspect(conn).get_table_names():
+            columns = {c["name"] for c in inspect(conn).get_columns(table)}
+            if "project_id" in columns:
+                assert (
+                    conn.execute(
+                        text(f"SELECT COUNT(*) FROM {table} WHERE project_id=:pid"),
+                        {"pid": SOURCE["project_id"]},
+                    ).scalar()
+                    == 0
+                ), table
+        assert (
+            conn.execute(
+                text("SELECT explanation FROM llm_explanations WHERE project_id='other'")
+            ).scalar()
+            == "other"
+        )
+
+
+@pytest.mark.parametrize(
+    "raw", ["{broken", "[]", '{"bindings":null}', '{"bindings":[],"demo":"false"}']
+)
+def test_pr39_invalid_adapter_configuration_is_controlled(ui, raw, caplog):
+    _, http, _ = ui
+    Path(os.environ["INFERENCE_ADAPTER_CONFIG"]).write_text(raw)
+    response = http.get("/api/inference/sources")
+    assert response.status_code == 503
+    assert response.json["error"]["code"] == "invalid_configuration"
+    assert raw not in response.text
+    assert "Invalid inference adapter configuration" in caplog.text
+
+
+def test_pr39_bad_binding_in_another_project_is_isolated(ui):
+    _, http, config = ui
+    config["bindings"].insert(0, {"source": {"project_id": "other-project"}})
+    Path(os.environ["INFERENCE_ADAPTER_CONFIG"]).write_text(json.dumps(config))
+    assert http.get("/api/inference/sources").status_code == 200
+    with pytest.raises(adapter.AdapterError) as error:
+        adapter.bindings("other-project")
+    assert error.value.code == "invalid_configuration"
+
+
+def test_pr39_bad_configuration_does_not_abort_other_project_jobs(ui, monkeypatch):
+    from collectors import scheduler
+    from ml import anomaly_detector
+
+    calls = []
+    monkeypatch.setattr(scheduler, "_iter_retrain_projects", lambda: ["bad", "good"])
+    monkeypatch.setattr(storage, "list_metric_tables", lambda pid: ["orders"])
+    original = adapter.bindings
+
+    def bindings(pid):
+        if pid == "bad":
+            raise adapter.AdapterError(503, "invalid_configuration")
+        return original(pid)
+
+    monkeypatch.setattr(adapter, "bindings", bindings)
+    monkeypatch.setattr(
+        anomaly_detector, "retrain_all", lambda **kwargs: calls.append(kwargs["project_id"]) or {}
+    )
+    monkeypatch.setattr(anomaly_detector, "score_table", lambda *a, **kw: [])
+    scheduler.retrain_anomaly_detectors()
+    assert calls == ["good"]
+
+
+def test_pr39_delete_is_transactional(ui):
+    source_storage.save_snapshot(SOURCE, [])
+    with storage.get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TRIGGER fail_delete BEFORE DELETE ON source_schema_snapshots "
+                "BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END"
+            )
+        )
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        storage.delete_project("u", SOURCE["project_id"])
+    assert storage.get_project_by_id("u", SOURCE["project_id"])
+    assert len(source_storage.metrics(SOURCE, "row_count")) == 2
+    assert source_storage.snapshot(SOURCE) == []
+
+
+def test_pr39_actual_training_continues_after_insufficient_source(
+    two_sources, tmp_path, monkeypatch
+):
+    _, config, first = two_sources
+    config["candidate_registry_path"] = str(tmp_path / "candidates")
+    Path(os.environ["INFERENCE_ADAPTER_CONFIG"]).write_text(json.dumps(config))
+    monkeypatch.setenv("INFERENCE_TRAINING_GIT_SHA", "a" * 40)
+    add_history(SOURCE, list(range(15 * 206, 30, -15)), list(range(204)))
+    candidates = adapter.train_candidates(SOURCE["project_id"])
+    assert len(candidates) == 1
+    assert candidates[0]["source"] == SOURCE
+    assert candidates[0]["training"]["n_points"] >= 200
+    assert not (tmp_path / "candidates" / "active").exists()
+
+
+def test_pr39_service_configuration_and_framework_errors(client):
+    with pytest.raises(ValueError, match="registry_path"):
+        create_app({"principals": []})
+    for method, path, status, code in [
+        ("get", "/missing", 404, "not_found"),
+        ("get", "/v1/predict", 405, "method_not_allowed"),
+    ]:
+        response = getattr(client, method)(path)
+        assert response.status_code == status
+        assert response.json() == {"error": {"code": code, "message": code}}
+
+
+@pytest.mark.parametrize("age_days", [1, 2, 15])
+def test_pr39_duplicates_on_older_dates_do_not_block_new_scores(ui, age_days):
+    app, _, config = ui
+    add_history(SOURCE, [age_days * 1440 + 15, age_days * 1440, 60], [70, 80, 90])
+    stamps = [r["ts"] for r in source_storage.metrics(SOURCE, "row_count")]
+    storage.save_metrics(
+        [{"ts": stamps[1], "table_name": "orders", "metric_name": "row_count", "value": 999}],
+        SOURCE["project_id"],
+        connection_id=SOURCE["connection_id"],
+        schema_name="public",
+    )
+    client = RecordingClient(app.config["INFERENCE_HTTP_CLIENT"])
+    adapter.score_project(SOURCE["project_id"], client=client)
+    assert saved(config["bindings"][0]) == stamps[3:]
+    assert [ts for _, ts in client.sent] == stamps[3:]

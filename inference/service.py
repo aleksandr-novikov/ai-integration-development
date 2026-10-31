@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from jsonschema import ValidationError
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException
 
 from ml.features import FEATURE_SCHEMA_VERSION
 from ml.inference_contract import document, strict_json, validate_semantics, validator
@@ -44,6 +45,8 @@ def create_app(config=None):
     config = copy.deepcopy(read_config() if config is None else config)
     if type(config.get("demo", False)) is not bool:
         raise ValueError("demo must be a boolean")
+    if not isinstance(config.get("registry_path"), str) or not config["registry_path"]:
+        raise ValueError("registry_path is required")
     principals = config.get("principals", [])
     for entry in principals:
         if not isinstance(entry["token"], str) or not entry["token"]:
@@ -66,6 +69,15 @@ def create_app(config=None):
             status_code=exc.status,
             content={"error": {"code": exc.code, "message": exc.code}},
             headers=headers,
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request, exc):
+        code = {404: "not_found", 405: "method_not_allowed"}.get(exc.status_code, "http_error")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": code, "message": code}},
+            headers=exc.headers,
         )
 
     @app.exception_handler(Exception)
@@ -92,8 +104,31 @@ def create_app(config=None):
         ):
             raise ApiError(415, "unsupported_media_type")
         try:
-            payload = strict_json(await request.body())
-        except (ValueError, UnicodeError):
+            raw = bytearray()
+            async for chunk in request.stream():
+                if len(raw) + len(chunk) > 64 * 1024:
+                    raise ApiError(413, "request_too_large")
+                raw.extend(chunk)
+            # Bound nesting before invoking the recursive JSON decoder.
+            depth, quoted, escaped = 0, False, False
+            for byte in raw:
+                if quoted:
+                    if escaped:
+                        escaped = False
+                    elif byte == 92:
+                        escaped = True
+                    elif byte == 34:
+                        quoted = False
+                elif byte == 34:
+                    quoted = True
+                elif byte in (91, 123):
+                    depth += 1
+                    if depth > 32:
+                        raise ApiError(400, "invalid_json")
+                elif byte in (93, 125):
+                    depth -= 1
+            payload = strict_json(raw)
+        except (ValueError, UnicodeError, RecursionError):
             raise ApiError(400, "invalid_json") from None
         try:
             schema.validate(payload)
@@ -117,20 +152,20 @@ def create_app(config=None):
         try:
             key = (payload["model_version"], tuple(sorted(payload["source"].items())))
             with cache_lock:
-                # Even cache hits recheck source, manifest, admission and the
-                # current artifact bytes. Corruption never serves a stale copy.
-                loaded = load_version(
-                    config["registry_path"],
-                    payload["model_version"],
-                    source=payload["source"],
-                    demo=config.get("demo", False),
-                    cached=cache.get(key),
-                )
+                cached = cache.get(key)
+            loaded = load_version(
+                config["registry_path"],
+                payload["model_version"],
+                source=payload["source"],
+                demo=config.get("demo", False),
+                cached=cached,
+            )
+            with cache_lock:
                 cache[key] = loaded
                 cache.move_to_end(key)
                 if len(cache) > 16:
                     cache.popitem(last=False)
-                return loaded
+            return loaded
         except RegistryError:
             raise ApiError(503, "model_unavailable") from None
 

@@ -13,7 +13,12 @@ coverage.xml
 htmlcov/
 .DS_Store
 monitor.db
-docs/
+docs/**
+!docs/course/
+docs/course/**
+!docs/course/api/
+docs/course/api/**
+!docs/course/api/inference.openapi.yaml
 meetings/
 tests/
 README.md

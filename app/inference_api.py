@@ -30,7 +30,12 @@ def ambiguous_source(exc):
     return error(adapter.AdapterError(409, "ambiguous_source"))
 
 
-def authorized_source(value):
+@bp.errorhandler(source_storage.InvalidHistoryError)
+def invalid_history(exc):
+    return error(adapter.AdapterError(422, "invalid_history"))
+
+
+def authorized_source(value, *, serving=True):
     pid = project()
     try:
         validator("Source").validate(value)
@@ -38,7 +43,13 @@ def authorized_source(value):
         raise adapter.AdapterError(422, "invalid_input") from None
     if value["project_id"] != pid:
         raise adapter.AdapterError(403, "source_forbidden")
-    adapter.check_source(value)
+    if serving:
+        adapter.check_source(value)
+    else:
+        try:
+            source_storage.check_access(value)
+        except ValueError:
+            raise adapter.AdapterError(403, "source_forbidden") from None
     return value
 
 
@@ -56,7 +67,11 @@ def sources():
 
 @bp.post("/predict")
 def predict():
-    project()
+    from app.metrics_storage import get_member_role
+
+    pid = project()
+    if get_member_role(pid, current_user.id) not in {"owner", "editor"}:
+        raise adapter.AdapterError(403, "source_forbidden")
     body = request.get_json(silent=True)
     try:
         validator("ModelRequest").validate(body)

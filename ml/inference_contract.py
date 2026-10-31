@@ -1,8 +1,10 @@
 """Shared wire validation. No Flask, storage, scheduler or model imports."""
 
+import copy
 import json
 import math
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -42,12 +44,19 @@ def strict_json(raw):
     return json.loads(raw, parse_constant=reject, parse_float=numeric, parse_int=numeric)
 
 
-def document():
+@lru_cache(maxsize=1)
+def _document():
     return yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
 
 
+def document():
+    # Callers may adapt servers for Swagger without changing shared validators.
+    return copy.deepcopy(_document())
+
+
+@lru_cache(maxsize=16)
 def validator(name):
-    spec = document()
+    spec = _document()
     uri = "urn:dbmonitor:inference"
     registry = Registry().with_resource(
         uri, Resource.from_contents(spec, default_specification=DRAFT202012)

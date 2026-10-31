@@ -270,7 +270,7 @@
               breakdown = `<p class="text-xs text-slate-500 dark:text-slate-400">Подробности недоступны (модель не обучена).</p>`;
             }
             return `
-              <li data-ts="${a.ts}" class="anomaly-row">
+              <li data-ts="${a.ts}" data-observation="${anomaliesRaw.indexOf(a)}" class="anomaly-row">
                 <button type="button"
                   class="anomaly-toggle flex w-full items-center justify-between gap-3 px-5 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <div class="flex items-center gap-2 min-w-0">
@@ -464,6 +464,10 @@
 
       async function toggleExplain(row) {
         const ts = row.dataset.ts;
+        const observation = anomaliesRaw[Number(row.dataset.observation)];
+        const source = observation?.source?.connection_id !== "legacy-unknown"
+          ? observation?.source : undefined;
+        const cacheKey = JSON.stringify([source, currentMetric, ts]);
         const details = row.querySelector(".anomaly-details");
         const chevron = row.querySelector(".anomaly-chevron");
         const isOpen = !details.classList.contains("hidden");
@@ -498,10 +502,10 @@
           resultEl.classList.remove("hidden");
         };
 
-        if (explainCache.has(ts)) {
+        if (explainCache.has(cacheKey)) {
           errorEl.classList.add("hidden");
           spinner.classList.add("hidden");
-          fill(explainCache.get(ts));
+          fill(explainCache.get(cacheKey));
           return;
         }
 
@@ -511,8 +515,8 @@
         try {
           const resp = await fetch("/api/explain", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ table: tableName, metric: currentMetric, ts }),
+            headers: { "Content-Type": "application/json", "X-CSRFToken": {{ csrf_token()|tojson }} },
+            body: JSON.stringify({ table: tableName, metric: currentMetric, ts, source }),
           });
           const body = await resp.json();
           if (!resp.ok) {
@@ -520,7 +524,7 @@
             errorEl.classList.remove("hidden");
             return;
           }
-          explainCache.set(ts, body);
+          explainCache.set(cacheKey, body);
           fill(body);
         } catch {
           errorEl.textContent = "Сетевая ошибка. Попробуйте ещё раз.";

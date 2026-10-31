@@ -322,7 +322,7 @@ def detect_changepoints() -> None:
 
 
 def retrain_anomaly_detectors() -> None:
-    from app.inference_adapter import is_served, score_project, train_candidates
+    from app.inference_adapter import AdapterError, bindings, score_project, train_candidates
     from app.metrics_storage import list_metric_tables, save_anomaly_scores
     from ml.anomaly_detector import InsufficientDataError, retrain_all, score_table
 
@@ -333,7 +333,12 @@ def retrain_anomaly_detectors() -> None:
         tables = list_metric_tables(project_id)
         if not tables and project_id != "legacy":
             continue
-        if any(is_served(project_id, table) for table in tables):
+        try:
+            served = {e["source"]["table_name"] for e in bindings(project_id)}
+        except AdapterError:
+            logger.exception("[project=%s] invalid inference configuration", project_id)
+            continue
+        if served.intersection(tables):
             try:
                 train_candidates(project_id)
             except Exception:
@@ -342,7 +347,7 @@ def retrain_anomaly_detectors() -> None:
                 score_project(project_id)
             except Exception:
                 logger.exception("[project=%s] published inference failed", project_id)
-            tables = [table for table in tables if not is_served(project_id, table)]
+            tables = [table for table in tables if table not in served]
             if not tables:
                 continue
         counts = retrain_all(project_id=project_id, tables=tables or None)

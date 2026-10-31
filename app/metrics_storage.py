@@ -72,6 +72,20 @@ def get_engine() -> Engine:
 
 
 def _apply_schema(engine: Engine) -> None:
+    # A session lock covers inspection AND every DDL transaction. Per-process
+    # threading locks alone cannot serialize concurrent PostgreSQL workers.
+    if not _is_postgres():
+        return _apply_schema_unlocked(engine)
+    with engine.connect() as lock:
+        lock.execute(text("SELECT pg_advisory_lock(730120260039)"))
+        try:
+            _apply_schema_unlocked(engine)
+        finally:
+            lock.execute(text("SELECT pg_advisory_unlock(730120260039)"))
+            lock.commit()
+
+
+def _apply_schema_unlocked(engine: Engine) -> None:
     # Run column migrations BEFORE the main loop so indexes that depend on
     # newly added columns (e.g. project_id) don't fail on existing installs.
     _migrate_existing_schema(engine)
@@ -629,8 +643,13 @@ def _normalize_ts(value: Any) -> str | None:
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=UTC)
-        return value.astimezone(UTC).isoformat(timespec="seconds")
-    return str(value)
+        return value.astimezone(UTC).isoformat()
+    try:
+        from ml.inference_contract import canonical_ts
+
+        return datetime.fromisoformat(canonical_ts(str(value))).isoformat()
+    except ValueError:
+        return str(value)
 
 
 def save_metrics(
@@ -1052,6 +1071,51 @@ def get_anomaly_scores(
     ]
 
 
+def active_anomaly_scores(project_id, table_name=None, window=timedelta(days=30)):
+    """Main screens select the configured pair per full source; legacy stays separate."""
+    from app.inference_adapter import bindings
+    from app.source_storage import check_access, source_params
+
+    params = {"pid": project_id}
+    entries = bindings(project_id)
+    legacy = ("(model_version = 'legacy-unknown' AND feature_schema_version = 'legacy-unknown' "
+              "AND connection_id = 'legacy-unknown' AND schema_name = 'legacy-unknown'")
+    clauses = []
+    for i, entry in enumerate(entries):
+        source = source_params(entry["source"])
+        params[f"table{i}"] = source["table_name"]
+        legacy += f" AND table_name <> :table{i}"
+        try:
+            check_access(source)
+        except ValueError:
+            continue
+        identity = {**source, "model_version": entry["model_version"],
+                    "feature_schema_version": entry["feature_schema_version"]}
+        checks = []
+        for key, value in identity.items():
+            params[f"{key}{i}"] = value
+            checks.append(f"{key} = :{key}{i}")
+        clauses.append("(" + " AND ".join(checks) + ")")
+    clauses.append(legacy + ")")
+    where = "project_id = :pid AND (" + " OR ".join(clauses) + ")"
+    if table_name is not None:
+        where += " AND table_name = :table"
+        params["table"] = table_name
+    if window is not None:
+        where += " AND ts >= :since"
+        params["since"] = _iso(datetime.now(UTC) - window)
+    with get_engine().connect() as conn:
+        rows = conn.execute(text(
+            "SELECT ts, score, is_anomaly, table_name, connection_id, schema_name, "
+            "model_version, feature_schema_version, is_demo FROM anomaly_scores WHERE "
+            + where + " ORDER BY ts"
+        ), params).fetchall()
+    return [{"ts": _normalize_ts(row[0]), "score": row[1], "is_anomaly": row[2],
+             "table_name": row[3], "source": {"project_id": project_id, "connection_id": row[4],
+             "schema_name": row[5], "table_name": row[3]}, "model_version": row[6],
+             "feature_schema_version": row[7], "demo": bool(row[8])} for row in rows]
+
+
 def save_drift_reports(
     table_name: str, rows: Iterable[dict], project_id: str = "legacy"
 ) -> int:
@@ -1256,17 +1320,12 @@ def _fetch_anomalies_by_ts(
     project_id: str, window: timedelta | None = timedelta(days=30)
 ) -> dict[str, int]:
     """Count IF anomalies per collector tick within the window."""
-    params: dict[str, Any] = {"project_id": project_id}
-    where = "WHERE project_id = :project_id AND is_anomaly = 1 AND model_version = 'legacy-unknown' AND feature_schema_version = 'legacy-unknown'"
-    if window is not None:
-        params["since"] = (datetime.now(UTC) - window).isoformat()
-        where += " AND ts >= :since"
-    stmt = text(f"SELECT ts, COUNT(*) FROM anomaly_scores {where} GROUP BY ts")
-    with get_engine().connect() as conn:
-        return {
-            _normalize_ts(r[0]): int(r[1])
-            for r in conn.execute(stmt, params).fetchall()
-        }
+    result = {}
+    for row in active_anomaly_scores(project_id, window=window):
+        if row["is_anomaly"]:
+            stamp = row["ts"]
+            result[stamp] = result.get(stamp, 0) + 1
+    return result
 
 
 def _history_aggregate(
@@ -2392,14 +2451,12 @@ def delete_project(user_id: str, project_id: str) -> bool:
         )
         deleted = (result.rowcount or 0) > 0
         if deleted:
-            conn.execute(
-                text("DELETE FROM metrics WHERE project_id = :pid"),
-                {"pid": project_id},
-            )
-            conn.execute(
-                text("DELETE FROM notifications WHERE project_id = :pid"),
-                {"pid": project_id},
-            )
+            # Tables without a project FK must be purged in this transaction too.
+            for table in ("metrics", "notifications", "source_schema_snapshots", "llm_explanations",
+                          "anomaly_scores", "changepoints", "drift_reports", "schema_events",
+                          "schema_snapshots", "telegram_throttle", "project_notifications"):
+                conn.execute(text(f"DELETE FROM {table} WHERE project_id = :pid"),
+                             {"pid": project_id})
     return deleted
 
 
