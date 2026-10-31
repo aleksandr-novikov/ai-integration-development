@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "issue": "https://github.com/aleksandr-novikov/ai-integration-development/issues/11",
-  "checked_at_utc": "2026-10-31T17:25:05+00:00",
-  "session": "s20261031-170510-e7e320",
+  "local_checks_at_utc": "2026-10-31T17:25:05+00:00",
+  "ci_observed_at_utc": "2026-10-31T18:23:15+00:00",
   "base_sha": "ac0ae04fda308faaf613a3880be84b2d6463f88e",
-  "snapshot_stage": "before_publication",
+  "local_checks_stage": "before_publication",
   "environment": {
     "python": "3.12.3",
     "playwright": "1.61.0",
@@ -53,11 +53,13 @@
     },
     {
       "number": 4,
-      "status": "pending_new_pr_ci",
+      "status": "pr_checks_passed_master_e2e_unconfirmed",
       "evidence": [
-        "VERIFICATION.md"
+        "VERIFICATION.md",
+        "https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/41224732107",
+        "https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/41224732022"
       ],
-      "limitation": "New SHA checks must be observed after publication; CI E2E is master-only."
+      "limitation": "PR checks passed on ci.verified_sha; CI E2E is master-only and is unconfirmed after the Playwright update."
     },
     {
       "number": 5,
@@ -68,7 +70,8 @@
       ],
       "gaps": [
         "ml was missing from coverage source",
-        "No dedicated real model -> SQLite -> API test"
+        "No dedicated real model -> SQLite -> API test",
+        "Master E2E failed on the base SHA at browser installation"
       ]
     }
   ],
@@ -166,7 +169,58 @@
     }
   },
   "ci": {
-    "new_sha_observation": "not_published_at_snapshot",
+    "pr": {
+      "number": 40,
+      "url": "https://github.com/aleksandr-novikov/ai-integration-development/pull/40"
+    },
+    "verified_sha": "39db8f6e4943c9e56c5657fecdb91356b9983e90",
+    "verified_sha_status": "pr_checks_passed_e2e_skipped",
+    "status_source": "Public GitHub REST API; job logs require authentication",
+    "runs": [
+      {
+        "workflow": "tests",
+        "run_id": 41224732107,
+        "url": "https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/41224732107",
+        "event": "pull_request",
+        "conclusion": "success"
+      },
+      {
+        "workflow": "lint",
+        "run_id": 41224732022,
+        "url": "https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/41224732022",
+        "event": "pull_request",
+        "conclusion": "success"
+      }
+    ],
+    "jobs": {
+      "test (3.11)": "success",
+      "test (3.12)": "success",
+      "test (3.13)": "success",
+      "integration": "success",
+      "ruff": "success",
+      "e2e": "skipped"
+    },
+    "reported_counts": {
+      "source": "PR description and review results; not readable from public logs",
+      "test (3.12)": {
+        "passed": 1245,
+        "xfailed": 3,
+        "deselected": 48,
+        "coverage_percent": 86
+      },
+      "integration": {
+        "passed": 31
+      }
+    },
+    "documentation_commit": {
+      "changed_paths": [
+        "docs/course/testing/STRATEGY.md",
+        "docs/course/testing/VERIFICATION.md",
+        "docs/course/testing/verification.json"
+      ],
+      "checks_reported_in": "https://github.com/aleksandr-novikov/ai-integration-development/pull/40",
+      "note": "A file cannot contain the SHA of its own commit."
+    },
     "pr_and_master_checks": [
       "test (3.11)",
       "test (3.12)",
@@ -176,7 +230,59 @@
     ],
     "e2e": {
       "condition": "github.event_name == 'push' && github.ref == 'refs/heads/master'",
-      "new_sha_success_verified": false
+      "status": "failed_on_base_unconfirmed_after_update",
+      "pr_result": "skipped",
+      "local_result": {
+        "status": "passed",
+        "passed": 17,
+        "scope": "Does not reproduce browser installation on the GitHub Actions runner"
+      },
+      "new_sha_success_verified": false,
+      "playwright": {
+        "previous": "1.50.0",
+        "updated": "1.61.0"
+      },
+      "master_failure": {
+        "base_sha": "ac0ae04fda308faaf613a3880be84b2d6463f88e",
+        "run_id": 40255636294,
+        "url": "https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/40255636294",
+        "created_at_utc": "2026-10-26T01:43:53+00:00",
+        "event": "push",
+        "conclusion": "failure",
+        "failed_job": "e2e",
+        "failed_step": "Install Playwright browsers",
+        "annotation": "Process completed with exit code 1.",
+        "skipped_step": "Run E2E tests",
+        "other_jobs": {
+          "test (3.11)": "success",
+          "test (3.12)": "success",
+          "test (3.13)": "success",
+          "integration": "success",
+          "ruff": "success"
+        },
+        "previous_successful_master_run": {
+          "sha": "6ffaa6b",
+          "run_id": 40225151001,
+          "url": "https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/40225151001"
+        },
+        "dependencies_or_workflows_changed_since_previous_run": false,
+        "cause": {
+          "status": "probable_not_proven_by_log",
+          "hypothesis": "Playwright 1.50.0 does not support Ubuntu 26.04",
+          "evidence": [
+            "Run notice: ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026",
+            "Playwright 1.50.0 package has no dependency table or browser links for Ubuntu 26",
+            "Playwright 1.61.0 package lists Ubuntu 26.04 as officially supported",
+            "Independent review reported the same cause"
+          ],
+          "unverified": [
+            "Error text of the failed step",
+            "Operating system version of the failed job"
+          ],
+          "log_access": "HTTP 403 without authentication"
+        }
+      },
+      "required_after_merge": "Check the e2e job of the master tests run for the merge commit, including Install Playwright browsers and Run E2E tests."
     },
     "coverage_fail_under": null
   },
