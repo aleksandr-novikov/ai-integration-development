@@ -2,6 +2,8 @@
 -- SQLite for MVP; post-MVP migration path is Postgres + TimescaleDB.
 
 CREATE TABLE IF NOT EXISTS metrics (
+    connection_id TEXT NOT NULL DEFAULT 'legacy-unknown',
+    schema_name TEXT NOT NULL DEFAULT 'legacy-unknown',
     project_id  TEXT NOT NULL,   -- tenant scope (#53). 'legacy' for pre-#53 rows.
     ts          TEXT NOT NULL,   -- ISO 8601 UTC, e.g. "2026-04-22T07:30:00"
     table_name  TEXT NOT NULL,
@@ -67,12 +69,17 @@ CREATE INDEX IF NOT EXISTS idx_schema_events_project_table_ts
 -- Anomaly scores from Isolation Forest — written by the collect tick and
 -- the nightly retrain job. One row per (ts, table); upsert on re-run.
 CREATE TABLE IF NOT EXISTS anomaly_scores (
+    is_demo INTEGER NOT NULL DEFAULT 0,
+    connection_id TEXT NOT NULL DEFAULT 'legacy-unknown',
+    schema_name TEXT NOT NULL DEFAULT 'legacy-unknown',
+    model_version TEXT NOT NULL DEFAULT 'legacy-unknown',
+    feature_schema_version TEXT NOT NULL DEFAULT 'legacy-unknown',
     project_id  TEXT NOT NULL DEFAULT 'legacy',
     ts          TEXT NOT NULL,
     table_name  TEXT NOT NULL,
     score       REAL NOT NULL,   -- raw decision_function value; < 0 means anomaly
     is_anomaly  INTEGER NOT NULL, -- 1 if anomaly, 0 otherwise
-    PRIMARY KEY (project_id, ts, table_name)
+    PRIMARY KEY (project_id, connection_id, schema_name, table_name, ts, model_version, feature_schema_version)
 );
 
 CREATE INDEX IF NOT EXISTS idx_anomaly_scores_table_ts
@@ -104,6 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_drift_reports_project_ts
 -- LLM-generated root-cause explanations — cached to avoid repeated NIM calls.
 -- TTL is 24 h, checked at read time via created_at.
 CREATE TABLE IF NOT EXISTS llm_explanations (
+    project_id TEXT NOT NULL DEFAULT 'legacy-unowned',
+    connection_id TEXT NOT NULL DEFAULT 'legacy-unknown',
+    schema_name TEXT NOT NULL DEFAULT 'legacy-unknown',
     table_name    TEXT NOT NULL,
     metric        TEXT NOT NULL,
     ts            TEXT NOT NULL,
@@ -111,7 +121,7 @@ CREATE TABLE IF NOT EXISTS llm_explanations (
     suggested_fix TEXT NOT NULL,
     confidence    REAL NOT NULL,
     created_at    TEXT NOT NULL,
-    PRIMARY KEY (table_name, metric, ts)
+    PRIMARY KEY (project_id, connection_id, schema_name, table_name, metric, ts)
 );
 
 -- Throttle table for Telegram notifications (#143 multi-tenant).
@@ -396,4 +406,10 @@ CREATE TABLE IF NOT EXISTS project_notifications (
     throttle_minutes      INTEGER NOT NULL DEFAULT 30
                           CHECK (throttle_minutes BETWEEN 1 AND 1440),
     updated_at            TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_schema_snapshots (
+    project_id TEXT NOT NULL, connection_id TEXT NOT NULL, schema_name TEXT NOT NULL,
+    table_name TEXT NOT NULL, columns TEXT NOT NULL, captured_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, connection_id, schema_name, table_name)
 );

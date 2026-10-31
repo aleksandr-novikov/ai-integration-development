@@ -1,24 +1,79 @@
 openapi: 3.1.0
 info:
   title: DB Monitoring — контракт внутреннего инференса
-  version: 1.0.0
+  version: 1.1.0
   description: |
-    Проект контракта #4 по ADR-001. Endpoint ещё НЕ реализован: реализация,
-    авторизация и миграции — #12, публикация артефакта — #5.
+    Контракт #4 по ADR-001; реализация — inference.service (#12).
+    Публикация артефакта — #5. Режим demo не означает допуска качества.
     Сервис принимает готовые немасштабированные признаки от доверенного
     Flask-адаптера; не читает историю, не вычисляет дельты и не вызывает fit.
 servers:
   - url: http://localhost:8000
-    description: Планируемый адрес учебного стенда, сейчас сервис отсутствует
+    description: Локальный учебный стенд
 security:
   - AdapterBearer: []
 paths:
+  /healthz:
+    get:
+      operationId: health
+      summary: Проверить работу процесса (не готовность модели)
+      security: []
+      responses:
+        '200':
+          description: Процесс работает; demo явно обозначен
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, demo]
+                properties:
+                  status: {const: ok}
+                  demo: {type: boolean}
+  /v1/model:
+    post:
+      operationId: inspectModel
+      summary: Проверить доступность выбранной модели для разрешённого источника
+      description: Те же авторизация, строгий JSON, 409/503 и привязка source, что у predict.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRequest'
+      responses:
+        '200':
+          description: Версии и режим проверенного артефакта без обучения
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [source, model_version, feature_schema_version, demo, quality_admitted]
+                properties:
+                  source: {$ref: '#/components/schemas/Source'}
+                  model_version: {$ref: '#/components/schemas/ModelVersion'}
+                  feature_schema_version: {$ref: '#/components/schemas/FeatureSchemaVersion'}
+                  demo: {type: boolean}
+                  quality_admitted: {type: boolean}
+        '413':
+          description: JSON body exceeds 64 KiB (maximum nesting depth is 32)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400': {description: invalid_json}
+        '401': {description: authentication_required}
+        '403': {description: source_forbidden}
+        '409': {description: feature_schema_mismatch}
+        '415': {description: unsupported_media_type}
+        '422': {description: invalid_input}
+        '503': {description: model_unavailable}
+        '500': {description: internal_error}
   /v1/predict:
     post:
       operationId: predictAnomaly
       summary: Оценить одну точку выбранной опубликованной моделью
       description: |
-        Планируемый внутренний endpoint. Только application/json с конечными
+        Внутренний endpoint. Только application/json с конечными
         JSON-числами binary64; NaN/Infinity/-Infinity и переполнение при
         декодировании (например, 1e400) дают 400. Строки и boolean не приводятся
         к числам, а дают 422. До доступа к модели проверить
@@ -36,7 +91,7 @@ paths:
         coerce-booleans: false
       x-validation-order:
         - '401: проверить сервисный токен'
-        - '415/400: проверить Content-Type и строго декодировать JSON'
+        - '415/413/400: проверить Content-Type, размер/глубину тела и строго декодировать JSON'
         - '422: проверить структуру, типы и ограничения полей'
         - '403: проверить доступ к полному source'
         - '409: проверить поддержку feature_schema_version сервисом'
@@ -75,6 +130,12 @@ paths:
                 score: -0.12
                 threshold: 0
                 is_anomaly: true
+        '413':
+          description: JSON body exceeds 64 KiB (maximum nesting depth is 32)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '400':
           description: Неразбираемый JSON, NaN/Infinity/-Infinity или переполнение binary64
           content:
@@ -246,6 +307,14 @@ components:
           $ref: '#/components/schemas/FeatureSchemaVersion'
         features:
           $ref: '#/components/schemas/Features'
+    ModelRequest:
+      type: object
+      required: [source, model_version, feature_schema_version]
+      additionalProperties: false
+      properties:
+        source: {$ref: '#/components/schemas/Source'}
+        model_version: {$ref: '#/components/schemas/ModelVersion'}
+        feature_schema_version: {$ref: '#/components/schemas/FeatureSchemaVersion'}
     PredictionResponse:
       type: object
       required: [source, observed_at, model_version, feature_schema_version, score, threshold, is_anomaly]
@@ -276,6 +345,8 @@ components:
           description: Сырой decision_function, без min-max нормализации
         threshold: {type: number, format: double, const: 0}
         is_anomaly: {type: boolean}
+        demo: {type: boolean, description: Учебный режим сохраняется вместе с результатом}
+        quality_admitted: {type: boolean, description: Положительный допуск проверяется только в обычном режиме}
     Error:
       type: object
       required: [error]

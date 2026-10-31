@@ -18,7 +18,15 @@ from app.metrics_storage import (
     get_changepoints,
     get_metrics,
     get_schema_snapshot,
+    stored_instant,
 )
+
+
+def _timestamp(value):
+    instant = stored_instant(value)
+    if instant is None:
+        raise ValueError(f"invalid timestamp: {value!r}")
+    return instant
 
 
 def _context_window(ts: str) -> timedelta:
@@ -27,8 +35,11 @@ def _context_window(ts: str) -> timedelta:
         ts_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         if ts_dt.tzinfo is None:
             ts_dt = ts_dt.replace(tzinfo=UTC)
-        age = datetime.now(UTC) - ts_dt
-        return max(timedelta(hours=48), age + timedelta(hours=2))
+        now = datetime.now(UTC)
+        age = now - ts_dt
+        window = max(timedelta(hours=48), age + timedelta(hours=2))
+        # The historical buffer must not push a storage cutoff below year 1.
+        return min(window, now - datetime.min.replace(tzinfo=UTC))
     except (ValueError, TypeError):
         return timedelta(hours=48)
 
@@ -84,26 +95,33 @@ def _format_history_block(
 
 
 def _build_prompt(
-    table: str, metric: str, ts: str, project_id: str = "legacy"
+    table: str, metric: str, ts: str, project_id: str = "legacy", *, source=None,
 ) -> str:
-    schema = get_schema_snapshot(table) or []
+    if source is None:
+        schema = get_schema_snapshot(table, project_id=project_id) or []
+    else:
+        from app.source_storage import snapshot
+
+        schema = snapshot(source) or []
     schema_text = ", ".join(
         f"{c['name']} {c['type']}{'?' if c.get('nullable') else ''}"
         for c in schema
     ) or "unknown"
 
     window = _context_window(ts)
-    recent_rc = get_metrics(table, "row_count", project_id, window=window)
-    recent_nr = get_metrics(table, "null_rate", project_id, window=window)
-    changepoints = get_changepoints(
-        table, window=max(timedelta(days=14), window), project_id=project_id
-    )
-    anomaly_scores = get_anomaly_scores(table, project_id=project_id, window=window)
+    recent_rc = _context_metrics(table, "row_count", project_id, window, source)
+    recent_nr = _context_metrics(table, "null_rate", project_id, window, source)
+    cp_window = max(timedelta(days=14), window)
+    if source is None:
+        changepoints = get_changepoints(table, window=cp_window, project_id=project_id)
+        anomaly_scores = get_anomaly_scores(table, project_id=project_id, window=window)
+    else:
+        anomaly_scores, changepoints = _source_results(source, ts, window, cp_window)
 
     # Limit context to rows at or before ts so the LLM sees the state
     # at the moment of the anomaly, not current state.
-    recent_rc = [r for r in recent_rc if r["ts"] <= ts]
-    recent_nr = [r for r in recent_nr if r["ts"] <= ts]
+    recent_rc = [r for r in recent_rc if _timestamp(r["ts"]) <= _timestamp(ts)]
+    recent_nr = [r for r in recent_nr if _timestamp(r["ts"]) <= _timestamp(ts)]
 
     def _fmt(raw_ts: str) -> str:
         return raw_ts[:16].replace("T", " ") + " UTC"
@@ -114,12 +132,16 @@ def _build_prompt(
     nr_sample = [
         f"{_fmt(r['ts'])}: {r['value']:.3f}" for r in recent_nr[-10:]
     ]
-    cp_text = "\n".join(
-        f"  {_fmt(c['ts'])} {c['metric_name']}: {c['value_before']:.2f} → {c['value_after']:.2f}"
-        for c in changepoints
-    ) or "  none"
+    if changepoints is None:
+        cp_text = "  not available"
+    else:
+        cp_text = "\n".join(
+            f"  {_fmt(c['ts'])} {c['metric_name']}: {c['value_before']:.2f} → {c['value_after']:.2f}"
+            for c in changepoints
+            if _timestamp(c["ts"]) <= _timestamp(ts)
+        ) or "  none"
     anomaly_at_ts = next(
-        (a for a in anomaly_scores if a["ts"] == ts and a["is_anomaly"]), None
+        (a for a in anomaly_scores if _timestamp(a["ts"]) == _timestamp(ts) and a["is_anomaly"]), None
     )
     anomaly_score_text = (
         f"{anomaly_at_ts['score']:.4f}" if anomaly_at_ts else "not available"
@@ -247,18 +269,63 @@ def _parse_nim_response(raw: str) -> dict:
     }
 
 
+def _source_results(source, ts, window, cp_window):
+    """Scores and change-points that provably describe ``source`` at ``ts``.
+
+    A served source reads only its active model pair. Project/table-level legacy
+    results apply when no other source could have contributed to them; ``None``
+    instead of change-points means they cannot be attributed.
+    """
+    from app.inference_adapter import AdapterError, bindings
+    from app.source_storage import owns_project_results, scores
+
+    project_id, table = source["project_id"], source["table_name"]
+    try:
+        entry = next((e for e in bindings(project_id) if e["source"] == source), None)
+    except AdapterError:  # Explanations outlive a broken ML configuration.
+        return [], None
+    owned = owns_project_results(source, ts)
+    changepoints = (
+        get_changepoints(table, window=cp_window, project_id=project_id) if owned else None
+    )
+    if entry is not None:
+        return (
+            scores(source, entry["model_version"], entry["feature_schema_version"], window),
+            changepoints,
+        )
+    legacy = get_anomaly_scores(table, project_id=project_id, window=window) if owned else []
+    return legacy, changepoints
+
+
+def _context_metrics(table, metric, project_id, window, source):
+    if source is None:
+        # The project-level context is the unattributed series: rows of live,
+        # deleted or foreign connections never reach it.
+        from app.source_storage import UNKNOWN
+
+        rows = []
+        for row in get_metrics(table, metric, project_id, window=window, connection_id=UNKNOWN):
+            instant = stored_instant(row["ts"])
+            if instant is not None:
+                rows.append({**row, "ts": instant.isoformat()})
+        return rows
+    from app.source_storage import metrics
+
+    return metrics(source, metric, window)
+
+
 def _rule_based_explain(
-    table: str, metric: str, ts: str, project_id: str = "legacy"
+    table: str, metric: str, ts: str, project_id: str = "legacy", *, source=None,
 ) -> dict:
     """Template fallback when NIM is unavailable. confidence=0.3."""
     window = _context_window(ts)
-    all_rc = get_metrics(table, "row_count", project_id, window=window)
-    all_nr = get_metrics(table, "null_rate", project_id, window=window)
+    all_rc = _context_metrics(table, "row_count", project_id, window, source)
+    all_nr = _context_metrics(table, "null_rate", project_id, window, source)
 
     # Use only rows up to and including ts so the comparison reflects
     # conditions at the moment of the anomaly, not current state.
-    recent_rc = [r for r in all_rc if r["ts"] <= ts]
-    recent_nr = [r for r in all_nr if r["ts"] <= ts]
+    recent_rc = [r for r in all_rc if _timestamp(r["ts"]) <= _timestamp(ts)]
+    recent_nr = [r for r in all_nr if _timestamp(r["ts"]) <= _timestamp(ts)]
 
     if metric == "row_count" and len(recent_rc) >= 2:
         prev_val = recent_rc[-2]["value"]
@@ -317,23 +384,34 @@ def _rule_based_explain(
 
 
 def explain_anomaly(
-    table: str, metric: str, ts: str, project_id: str = "legacy"
+    table: str, metric: str, ts: str, project_id: str = "legacy", *, source=None,
 ) -> dict:
     """Orchestrate LLM explanation with cache bypass (cache handled in the API layer).
 
     Returns {explanation, suggested_fix, confidence}.
-    Never raises — falls back to rule-based on any NIM failure.
+    NIM failures fall back to rules; storage failures can still propagate.
     """
+    if source is None:
+        from app.source_storage import context_source
+
+        try:
+            source = context_source(project_id, table, ts, metric)
+        except ValueError:
+            return {"explanation": "Источник данных неоднозначен или недоступен. Требуется ручная проверка.",
+                    "suggested_fix": "Выберите подключение и схему таблицы.", "confidence": 0.3}
+    kwargs = {"project_id": project_id}
+    if source is not None:
+        kwargs["source"] = source
     if not settings.NIM_API_KEY:
-        return _rule_based_explain(table, metric, ts, project_id=project_id)
+        return _rule_based_explain(table, metric, ts, **kwargs)
 
     try:
-        prompt = _build_prompt(table, metric, ts, project_id=project_id)
+        prompt = _build_prompt(table, metric, ts, **kwargs)
         raw = _call_nim(prompt)
         parsed = _parse_nim_response(raw)
         if parsed:
             return parsed
         # JSON parsing failed — use rule-based
-        return _rule_based_explain(table, metric, ts, project_id=project_id)
+        return _rule_based_explain(table, metric, ts, **kwargs)
     except Exception:
-        return _rule_based_explain(table, metric, ts, project_id=project_id)
+        return _rule_based_explain(table, metric, ts, **kwargs)

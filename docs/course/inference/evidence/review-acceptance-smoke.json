@@ -1,0 +1,239 @@
+{
+  "recorded_at_utc": "2026-10-31T07:22:17.153986+00:00",
+  "mode": "explicit demo: archived baseline did not pass quality admission",
+  "request": {
+    "source": {
+      "project_id": "project-a",
+      "connection_id": "connection-a",
+      "schema_name": "public",
+      "table_name": "orders"
+    },
+    "observed_at": "2026-10-25T12:00:00+00:00",
+    "previous_observed_at": "2026-10-25T11:45:00+00:00",
+    "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+    "feature_schema_version": "1.0.0",
+    "features": {
+      "row_count": 110.0,
+      "null_rate": 0.03,
+      "d_row_count": 10.0,
+      "d_null_rate": 0.01
+    }
+  },
+  "response": {
+    "source": {
+      "connection_id": "connection-a",
+      "project_id": "project-a",
+      "schema_name": "public",
+      "table_name": "orders"
+    },
+    "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+    "feature_schema_version": "1.0.0",
+    "score": -0.045060413606536454,
+    "threshold": 0,
+    "is_anomaly": true,
+    "observed_at": "2026-10-25T12:00:00+00:00",
+    "demo": true,
+    "quality_admitted": false
+  },
+  "environment": {
+    "system": "Linux",
+    "machine": "x86_64",
+    "python": "3.12.3",
+    "logical_cpus": 4,
+    "ram_bytes": 6213009408,
+    "versions": {
+      "fastapi": "0.162.0",
+      "uvicorn": "0.49.0",
+      "scikit-learn": "1.6.1",
+      "skops": "0.16.0"
+    },
+    "browser": "Chromium 141.0.7390.37; Playwright 1.50.0; explicit executable override"
+  },
+  "measurement": {
+    "transport": "real localhost HTTP, one uvicorn worker; warm model cached, manifest/artifact bytes revalidated per request; no history/Flask time",
+    "cpu_ram_limit": "unrestricted local host; not the proposed 2-vCPU/4-GiB SLA profile",
+    "concurrency": 1,
+    "request_rate": "sequential, no imposed rate",
+    "cold_request_ms": 829.0352139738388,
+    "success_count": 100,
+    "failures": [],
+    "p95_ms_nearest_rank": 34.892188996309415,
+    "samples_ms": [
+      29.095887002767995,
+      23.42086299904622,
+      23.544434981886297,
+      34.892188996309415,
+      27.6637360220775,
+      24.985346011817455,
+      29.571950988611206,
+      33.598314999835566,
+      25.916843995219097,
+      25.7954359985888,
+      25.207619997672737,
+      25.020400003995746,
+      25.660815997980535,
+      38.27756698592566,
+      30.76742001576349,
+      33.898811001563445,
+      34.505403018556535,
+      32.169963989872485,
+      25.810894003370777,
+      23.988429980818182,
+      32.58430300047621,
+      26.595757983159274,
+      24.45193601306528,
+      28.400113980751485,
+      28.797383973142132,
+      29.005515010794625,
+      32.938935997663066,
+      29.04613400460221,
+      29.573606996564195,
+      33.64734700880945,
+      33.79352099727839,
+      27.481302997330204,
+      25.698785990243778,
+      32.18456800095737,
+      30.82607500255108,
+      28.062549012247473,
+      32.6197590038646,
+      29.742799000814557,
+      28.952156979357824,
+      29.695831006392837,
+      24.731259007239714,
+      23.833693005144596,
+      23.911174008389935,
+      26.952415995765477,
+      28.201900015119463,
+      25.022623973200098,
+      25.688838999485597,
+      24.527347995899618,
+      25.11388299171813,
+      25.849550002021715,
+      33.39368000160903,
+      29.850797000108287,
+      27.55521101062186,
+      28.44038701732643,
+      33.973235986195505,
+      25.232482992578298,
+      25.694772019051015,
+      26.74076601397246,
+      27.651576994685456,
+      29.200365010183305,
+      30.557443998986855,
+      33.331929007545114,
+      28.183583985082805,
+      30.921658006263897,
+      29.442136990837753,
+      26.527159003308043,
+      26.150988996960223,
+      27.5288830162026,
+      25.753127003554255,
+      26.199592015473172,
+      24.82973100268282,
+      33.347149001201615,
+      33.83449401007965,
+      24.49072600575164,
+      24.69556700089015,
+      23.13561600749381,
+      25.182517973007634,
+      27.09103300003335,
+      25.576351006748155,
+      23.921144020278007,
+      24.005090002901852,
+      25.356444995850325,
+      28.665952995652333,
+      34.002208994934335,
+      24.58943598321639,
+      34.92156899301335,
+      37.69497500616126,
+      31.726517976494506,
+      31.833262997679412,
+      33.35735099972226,
+      34.83363598934375,
+      33.10289600631222,
+      35.42411400121637,
+      34.183735988335684,
+      33.37291401112452,
+      33.363746013492346,
+      33.553524990566075,
+      26.599824021104723,
+      47.20351900323294,
+      28.75229500932619
+    ]
+  },
+  "swagger": [
+    {
+      "path": "/healthz",
+      "request": null,
+      "status": 200,
+      "response": {
+        "status": "ok",
+        "demo": true
+      }
+    },
+    {
+      "path": "/v1/model",
+      "request": {
+        "source": {
+          "project_id": "project-a",
+          "connection_id": "connection-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0"
+      },
+      "status": 200,
+      "response": {
+        "source": {
+          "connection_id": "connection-a",
+          "project_id": "project-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0",
+        "demo": true,
+        "quality_admitted": false
+      }
+    },
+    {
+      "path": "/v1/predict",
+      "request": {
+        "source": {
+          "project_id": "project-a",
+          "connection_id": "connection-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "observed_at": "2026-10-25T12:00:00+00:00",
+        "previous_observed_at": "2026-10-25T11:45:00+00:00",
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0",
+        "features": {
+          "row_count": 110.0,
+          "null_rate": 0.03,
+          "d_row_count": 10.0,
+          "d_null_rate": 0.01
+        }
+      },
+      "status": 200,
+      "response": {
+        "source": {
+          "connection_id": "connection-a",
+          "project_id": "project-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0",
+        "score": -0.045060413606536454,
+        "threshold": 0,
+        "is_anomaly": true,
+        "observed_at": "2026-10-25T12:00:00+00:00",
+        "demo": true,
+        "quality_admitted": false
+      }
+    }
+  ]
+}

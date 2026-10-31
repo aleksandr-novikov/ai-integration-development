@@ -19,10 +19,11 @@ RUN useradd -m -u 1000 user
 WORKDIR /app
 RUN chown user:user /app
 
-COPY --chown=user requirements.txt requirements-dev.txt ./
+COPY --chown=user requirements*.txt ./
 RUN pip install -U pip && pip install -r requirements.txt -r requirements-dev.txt
 
 COPY --chown=user . .
+RUN python -c "from ml.inference_contract import validator; validator('PredictionRequest')"
 
 USER user
 ENV PATH=/home/user/.local/bin:$PATH

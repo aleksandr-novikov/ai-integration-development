@@ -1,0 +1,6 @@
+{
+  "project_id": "project-a",
+  "connection_id": "connection-a",
+  "schema_name": "public",
+  "table_name": "orders"
+}

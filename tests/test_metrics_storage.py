@@ -339,7 +339,7 @@ def test_migrates_legacy_ml_tables_to_project_scoped_pk(tmp_path, monkeypatch):
 
     assert "project_id" in storage_mod._existing_columns(engine, "anomaly_scores")
     assert storage_mod._sqlite_pk_columns(engine, "anomaly_scores") == [
-        "project_id", "ts", "table_name",
+        "project_id", "connection_id", "schema_name", "table_name", "ts", "model_version", "feature_schema_version",
     ]
     assert storage_mod._sqlite_pk_columns(engine, "changepoints") == [
         "project_id", "ts", "table_name", "metric_name",
