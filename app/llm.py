@@ -18,14 +18,15 @@ from app.metrics_storage import (
     get_changepoints,
     get_metrics,
     get_schema_snapshot,
+    stored_instant,
 )
-from ml.inference_contract import canonical_ts
 
 
 def _timestamp(value):
-    if isinstance(value, datetime):
-        value = value.isoformat()
-    return datetime.fromisoformat(canonical_ts(value))
+    instant = stored_instant(value)
+    if instant is None:
+        raise ValueError(f"invalid timestamp: {value!r}")
+    return instant
 
 
 def _context_window(ts: str) -> timedelta:
@@ -110,12 +111,12 @@ def _build_prompt(
     window = _context_window(ts)
     recent_rc = _context_metrics(table, "row_count", project_id, window, source)
     recent_nr = _context_metrics(table, "null_rate", project_id, window, source)
-    # Existing change-points/scores lack a complete source key. Do not mix
-    # their project-wide values into a scoped source's prompt.
-    changepoints = [] if source is not None else get_changepoints(
-        table, window=max(timedelta(days=14), window), project_id=project_id
-    )
-    anomaly_scores = [] if source is not None else get_anomaly_scores(table, project_id=project_id, window=window)
+    cp_window = max(timedelta(days=14), window)
+    if source is None:
+        changepoints = get_changepoints(table, window=cp_window, project_id=project_id)
+        anomaly_scores = get_anomaly_scores(table, project_id=project_id, window=window)
+    else:
+        anomaly_scores, changepoints = _source_results(source, ts, window, cp_window)
 
     # Limit context to rows at or before ts so the LLM sees the state
     # at the moment of the anomaly, not current state.
@@ -131,10 +132,14 @@ def _build_prompt(
     nr_sample = [
         f"{_fmt(r['ts'])}: {r['value']:.3f}" for r in recent_nr[-10:]
     ]
-    cp_text = "\n".join(
-        f"  {_fmt(c['ts'])} {c['metric_name']}: {c['value_before']:.2f} → {c['value_after']:.2f}"
-        for c in changepoints
-    ) or "  none"
+    if changepoints is None:
+        cp_text = "  not available"
+    else:
+        cp_text = "\n".join(
+            f"  {_fmt(c['ts'])} {c['metric_name']}: {c['value_before']:.2f} → {c['value_after']:.2f}"
+            for c in changepoints
+            if _timestamp(c["ts"]) <= _timestamp(ts)
+        ) or "  none"
     anomaly_at_ts = next(
         (a for a in anomaly_scores if _timestamp(a["ts"]) == _timestamp(ts) and a["is_anomaly"]), None
     )
@@ -264,9 +269,46 @@ def _parse_nim_response(raw: str) -> dict:
     }
 
 
+def _source_results(source, ts, window, cp_window):
+    """Scores and change-points that provably describe ``source`` at ``ts``.
+
+    A served source reads only its active model pair. Project/table-level legacy
+    results apply when no other source could have contributed to them; ``None``
+    instead of change-points means they cannot be attributed.
+    """
+    from app.inference_adapter import AdapterError, bindings
+    from app.source_storage import owns_project_results, scores
+
+    project_id, table = source["project_id"], source["table_name"]
+    try:
+        entry = next((e for e in bindings(project_id) if e["source"] == source), None)
+    except AdapterError:  # Explanations outlive a broken ML configuration.
+        return [], None
+    owned = owns_project_results(source, ts)
+    changepoints = (
+        get_changepoints(table, window=cp_window, project_id=project_id) if owned else None
+    )
+    if entry is not None:
+        return (
+            scores(source, entry["model_version"], entry["feature_schema_version"], window),
+            changepoints,
+        )
+    legacy = get_anomaly_scores(table, project_id=project_id, window=window) if owned else []
+    return legacy, changepoints
+
+
 def _context_metrics(table, metric, project_id, window, source):
     if source is None:
-        return get_metrics(table, metric, project_id, window=window)
+        # The project-level context is the unattributed series: rows of live,
+        # deleted or foreign connections never reach it.
+        from app.source_storage import UNKNOWN
+
+        rows = []
+        for row in get_metrics(table, metric, project_id, window=window, connection_id=UNKNOWN):
+            instant = stored_instant(row["ts"])
+            if instant is not None:
+                rows.append({**row, "ts": instant.isoformat()})
+        return rows
     from app.source_storage import metrics
 
     return metrics(source, metric, window)

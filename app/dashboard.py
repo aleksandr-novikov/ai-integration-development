@@ -54,6 +54,7 @@ def _inference_view():
     if not current_user.is_authenticated or getattr(g, "current_project", None) is None:
         abort(403)
     entries = []
+    unbound = adapter.unbound_sources(_current_project_id())
     for entry in adapter.bindings(_current_project_id()):
         try:
             adapter.check_source(entry["source"])
@@ -79,7 +80,7 @@ def _inference_view():
         legacy = get_anomaly_scores(entry["source"]["table_name"], _current_project_id())
     return render_template(
         "inference.html", entries=entries, selected=int(selected), payload=payload,
-        versions=options, results=results, legacy=legacy,
+        versions=options, results=results, legacy=legacy, unbound=unbound,
         demo=adapter.configuration().get("demo", False) or any(row["demo"] for row in results),
     )
 
@@ -213,10 +214,9 @@ def _build_project_status(project_id: str, connections: list[dict], has_metrics:
     try:
         from sqlalchemy import text as _text
         with get_engine().connect() as conn:
-            from app.metrics_storage import active_anomaly_scores
+            from app.metrics_storage import count_active_anomalies
 
-            anomalies_7d = sum(row["is_anomaly"] for row in active_anomaly_scores(
-                project_id, window=timedelta(days=7)))
+            anomalies_7d = count_active_anomalies(project_id, window=timedelta(days=7))
             schema_changes_7d = conn.execute(_text(
                 "SELECT COUNT(*) FROM schema_events "
                 "WHERE project_id = :pid AND ts >= :since"
@@ -309,10 +309,9 @@ def _ml_last_runs(project_id: str) -> dict[str, str | None]:
         "drift": None,
     }
     with get_engine().connect() as conn:
-        from app.metrics_storage import active_anomaly_scores
+        from app.metrics_storage import last_active_score_ts
 
-        scores = active_anomaly_scores(project_id)
-        out["isolation_forest"] = max((r["ts"] for r in scores), default=None)
+        out["isolation_forest"] = last_active_score_ts(project_id)
         out["pelt"] = conn.execute(
             text("""
                 SELECT MAX(detected_at)

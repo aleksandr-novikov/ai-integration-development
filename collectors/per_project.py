@@ -757,19 +757,9 @@ def _baseline_median_row_count(table: str, project_id: str) -> float | None:
 
 def _latest_row_count_at(table: str, project_id: str, ts: str) -> float | None:
     """row_count в момент аномальной точки. Если такой записи нет — None."""
-    from sqlalchemy import text
+    from app.metrics_storage import metric_value_at
 
-    from app.metrics_storage import get_engine
-
-    with get_engine().connect() as conn:
-        row = conn.execute(text("""
-            SELECT value FROM metrics
-            WHERE project_id = :pid
-              AND table_name = :table
-              AND metric_name = 'row_count'
-              AND ts = :ts
-        """), {"pid": project_id, "table": table, "ts": ts}).fetchone()
-    return float(row[0]) if row else None
+    return metric_value_at(table, "row_count", project_id, ts)
 
 
 def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:

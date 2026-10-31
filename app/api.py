@@ -237,13 +237,14 @@ def explain():
 
     from ml.inference_contract import FiniteValidator, canonical_ts, validator
 
+    from .inference_api import json_body
     from .llm import _context_window, explain_anomaly
 
     if not current_user.is_authenticated and not (
         current_app.testing and current_app.config.get("LOGIN_DISABLED")
     ):
         return jsonify({"error": "authentication_required"}), 401
-    body = request.get_json(silent=True)
+    body = json_body()
     if not isinstance(body, dict) or any(
         not isinstance(body.get(key), str) for key in ("table", "metric", "ts")
     ):
@@ -266,7 +267,12 @@ def explain():
     cache_scope = {"project_id": project_id}
     context = {"project_id": project_id}
     source = body.get("source")
-    from app.source_storage import AmbiguousSourceError, InvalidHistoryError, context_source
+    from app.source_storage import (
+        AmbiguousSourceError,
+        InvalidHistoryError,
+        ObservationNotFoundError,
+        context_source,
+    )
 
     if source is None:
         try:
@@ -275,6 +281,8 @@ def explain():
             return jsonify({"error": "source_required"}), 409
         except InvalidHistoryError:
             return jsonify({"error": "invalid_history"}), 422
+        except ObservationNotFoundError:
+            return jsonify({"error": "observation not found"}), 404
         except ValueError:
             return jsonify({"error": "source_forbidden"}), 403
     if source is not None:
@@ -290,11 +298,11 @@ def explain():
         if source["table_name"] != table:
             return jsonify({"error": "invalid_source"}), 400
         try:
-            if not source_metrics(source, metric):
+            window = _context_window(ts)
+            if not source_metrics(source, metric, window=window):
                 return jsonify({"error": "table not found"}), 404
             # Both histories enter the explanation, including its fallback.
             # Validate that context before reading the cache or calling NIM.
-            window = _context_window(ts)
             context_rows = []
             for context_metric in ("row_count", "null_rate"):
                 context_rows.extend(source_metrics(source, context_metric, window=window))

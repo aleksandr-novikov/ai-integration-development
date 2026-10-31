@@ -652,6 +652,40 @@ def _normalize_ts(value: Any) -> str | None:
         return str(value)
 
 
+# ISO 8601 offsets stay within 14 h of UTC: a text range this wide around an
+# instant holds each of its stored forms, and callers then compare instants.
+_TS_TEXT_MARGIN = timedelta(hours=15)
+
+
+def stored_instant(value: Any) -> datetime | None:
+    """Aware UTC instant of a stored timestamp; ``None`` when it has no meaning.
+
+    Text forms of one instant differ (seconds, microseconds, offsets); offset-less
+    text is UTC by the schema definition.
+    """
+    try:
+        if not isinstance(value, datetime):
+            value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    except (ValueError, OverflowError):
+        return None
+
+
+def instant_range(
+    instant: datetime, *, before: timedelta = _TS_TEXT_MARGIN
+) -> tuple[str, str]:
+    """Inclusive ``ts`` bounds around *instant*, clamped to the datetime range."""
+    def shifted(delta: timedelta, limit: datetime) -> str:
+        try:
+            return (instant + delta).isoformat()
+        except OverflowError:
+            return limit.replace(tzinfo=UTC).isoformat()
+
+    return shifted(-before, datetime.min), shifted(_TS_TEXT_MARGIN, datetime.max)
+
+
 def save_metrics(
     rows: Iterable[dict], project_id: str, *, connection_id: str = "legacy-unknown",
     schema_name: str = "legacy-unknown",
@@ -699,28 +733,36 @@ def get_metrics(
     metric_name: str,
     project_id: str,
     window: timedelta = timedelta(days=7),
+    *,
+    connection_id: str | None = None,
 ) -> list[dict]:
-    """Return rows for (project, table, metric) within `window`, oldest first."""
+    """Return rows for (project, table, metric) within `window`, oldest first.
+
+    ``connection_id`` narrows the project-wide series to one owner.
+    """
     since = _iso(datetime.now(UTC) - window)
-    stmt = text("""
+    params = {
+        "project_id": project_id,
+        "table_name": table_name,
+        "metric_name": metric_name,
+        "since": since,
+    }
+    owner = ""
+    if connection_id is not None:
+        owner = "AND connection_id = :connection_id"
+        params["connection_id"] = connection_id
+    stmt = text(f"""
         SELECT ts, value, tags
         FROM metrics
         WHERE project_id = :project_id
           AND table_name = :table_name
           AND metric_name = :metric_name
           AND ts >= :since
+          {owner}
         ORDER BY ts
     """)
     with get_engine().connect() as conn:
-        rows = conn.execute(
-            stmt,
-            {
-                "project_id": project_id,
-                "table_name": table_name,
-                "metric_name": metric_name,
-                "since": since,
-            },
-        ).fetchall()
+        rows = conn.execute(stmt, params).fetchall()
     return [
         {
             "ts": _normalize_ts(r[0]),
@@ -729,6 +771,29 @@ def get_metrics(
         }
         for r in rows
     ]
+
+
+def metric_value_at(
+    table_name: str, metric_name: str, project_id: str, ts: Any
+) -> float | None:
+    """Value observed at the instant *ts*, whichever text form stores it."""
+    target = stored_instant(ts)
+    if target is None:
+        return None
+    low, high = instant_range(target)
+    stmt = text("""
+        SELECT ts, value FROM metrics
+        WHERE project_id = :project_id
+          AND table_name = :table_name
+          AND metric_name = :metric_name
+          AND ts >= :low AND ts <= :high
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {
+            "project_id": project_id, "table_name": table_name,
+            "metric_name": metric_name, "low": low, "high": high,
+        }).fetchall()
+    return next((float(value) for stamp, value in rows if stored_instant(stamp) == target), None)
 
 
 def get_latest_metric(
@@ -1071,8 +1136,8 @@ def get_anomaly_scores(
     ]
 
 
-def active_anomaly_scores(project_id, table_name=None, window=timedelta(days=30)):
-    """Main screens select the configured pair per full source; legacy stays separate."""
+def _active_scores_scope(project_id, table_name, window):
+    """WHERE clause of the configured pair per full source; legacy stays separate."""
     from app.inference_adapter import bindings
     from app.source_storage import check_access, source_params
 
@@ -1104,6 +1169,12 @@ def active_anomaly_scores(project_id, table_name=None, window=timedelta(days=30)
     if window is not None:
         where += " AND ts >= :since"
         params["since"] = _iso(datetime.now(UTC) - window)
+    return where, params
+
+
+def active_anomaly_scores(project_id, table_name=None, window=timedelta(days=30)):
+    """Rows of the active pairs. Overviews use the aggregates below instead."""
+    where, params = _active_scores_scope(project_id, table_name, window)
     with get_engine().connect() as conn:
         rows = conn.execute(text(
             "SELECT ts, score, is_anomaly, table_name, connection_id, schema_name, "
@@ -1114,6 +1185,22 @@ def active_anomaly_scores(project_id, table_name=None, window=timedelta(days=30)
              "table_name": row[3], "source": {"project_id": project_id, "connection_id": row[4],
              "schema_name": row[5], "table_name": row[3]}, "model_version": row[6],
              "feature_schema_version": row[7], "demo": bool(row[8])} for row in rows]
+
+
+def count_active_anomalies(project_id, window=timedelta(days=7)) -> int:
+    where, params = _active_scores_scope(project_id, None, window)
+    with get_engine().connect() as conn:
+        return conn.execute(text(
+            f"SELECT COUNT(*) FROM anomaly_scores WHERE {where} AND is_anomaly = 1"
+        ), params).scalar() or 0
+
+
+def last_active_score_ts(project_id) -> str | None:
+    where, params = _active_scores_scope(project_id, None, None)
+    with get_engine().connect() as conn:
+        return _normalize_ts(conn.execute(text(
+            f"SELECT MAX(ts) FROM anomaly_scores WHERE {where}"
+        ), params).scalar())
 
 
 def save_drift_reports(
@@ -1320,11 +1407,15 @@ def _fetch_anomalies_by_ts(
     project_id: str, window: timedelta | None = timedelta(days=30)
 ) -> dict[str, int]:
     """Count IF anomalies per collector tick within the window."""
-    result = {}
-    for row in active_anomaly_scores(project_id, window=window):
-        if row["is_anomaly"]:
-            stamp = row["ts"]
-            result[stamp] = result.get(stamp, 0) + 1
+    where, params = _active_scores_scope(project_id, None, window)
+    with get_engine().connect() as conn:
+        rows = conn.execute(text(
+            f"SELECT ts, COUNT(*) FROM anomaly_scores WHERE {where} AND is_anomaly = 1 GROUP BY ts"
+        ), params).fetchall()
+    result: dict[str, int] = {}
+    for stamp, count in rows:  # Text forms of one instant share a tick.
+        key = _normalize_ts(stamp)
+        result[key] = result.get(key, 0) + int(count)
     return result
 
 

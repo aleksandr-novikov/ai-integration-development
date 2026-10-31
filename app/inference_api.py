@@ -1,14 +1,35 @@
 """Versioned UI API. The user's current project is authoritative."""
 
+import json
+
 from flask import Blueprint, current_app, g, jsonify, request
 from flask_login import current_user
 from jsonschema import ValidationError
 
 from app import inference_adapter as adapter
 from app import source_storage
-from ml.inference_contract import FiniteValidator, validator
+from ml.inference_contract import MAX_JSON_BYTES, FiniteValidator, json_too_deep, validator
 
 bp = Blueprint("inference_api", __name__, url_prefix="/api/inference")
+
+
+def json_body():
+    """Request JSON within the service limits; ``None`` when it is not valid JSON."""
+    if not request.is_json:
+        return None
+    if (request.content_length or 0) > MAX_JSON_BYTES:
+        raise adapter.AdapterError(413, "request_too_large")
+    raw = bytearray()
+    while chunk := request.stream.read(MAX_JSON_BYTES + 1 - len(raw)):
+        raw.extend(chunk)
+        if len(raw) > MAX_JSON_BYTES:
+            raise adapter.AdapterError(413, "request_too_large")
+    if json_too_deep(raw):
+        raise adapter.AdapterError(400, "invalid_json")
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
 
 
 def project():
@@ -72,7 +93,7 @@ def predict():
     pid = project()
     if get_member_role(pid, current_user.id) not in {"owner", "editor"}:
         raise adapter.AdapterError(403, "source_forbidden")
-    body = request.get_json(silent=True)
+    body = json_body()
     try:
         validator("ModelRequest").validate(body)
     except ValidationError:

@@ -17,7 +17,14 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
 from ml.features import FEATURE_SCHEMA_VERSION
-from ml.inference_contract import document, strict_json, validate_semantics, validator
+from ml.inference_contract import (
+    MAX_JSON_BYTES,
+    document,
+    json_too_deep,
+    strict_json,
+    validate_semantics,
+    validator,
+)
 from ml.model_registry import RegistryError, inspect_version, load_version, validate_source
 
 logger = logging.getLogger(__name__)
@@ -108,27 +115,11 @@ def create_app(config=None):
         try:
             raw = bytearray()
             async for chunk in request.stream():
-                if len(raw) + len(chunk) > 64 * 1024:
+                if len(raw) + len(chunk) > MAX_JSON_BYTES:
                     raise ApiError(413, "request_too_large")
                 raw.extend(chunk)
-            # Bound nesting before invoking the recursive JSON decoder.
-            depth, quoted, escaped = 0, False, False
-            for byte in raw:
-                if quoted:
-                    if escaped:
-                        escaped = False
-                    elif byte == 92:
-                        escaped = True
-                    elif byte == 34:
-                        quoted = False
-                elif byte == 34:
-                    quoted = True
-                elif byte in (91, 123):
-                    depth += 1
-                    if depth > 32:
-                        raise ApiError(400, "invalid_json")
-                elif byte in (93, 125):
-                    depth -= 1
+            if json_too_deep(raw):
+                raise ApiError(400, "invalid_json")
             payload = strict_json(raw)
         except (ValueError, UnicodeError, RecursionError):
             raise ApiError(400, "invalid_json") from None

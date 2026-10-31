@@ -75,7 +75,8 @@ PGSERVICE=monitor_rehearsal pg_restore --exit-on-error /secure/monitor-before.du
 `SELECT timescaledb_post_restore()`. Не применять параллельный `pg_restore -j`.
 Версии PostgreSQL и расширения должны соответствовать репетиции;
 [официальный порядок](https://www.tigerdata.com/docs/deploy/self-hosted/backup-and-restore/logical-backup)
-сверяется для используемых версий. Эти шаги не заменены тестом plain PostgreSQL.
+сверяется для используемых версий. Integration CI проверяет создание новой схемы с
+hypertable; обновление существующей hypertable с данными и эта процедура не подтверждены.
 
 ## Откат
 

@@ -41,6 +41,11 @@ JSON 400, недостаточно истории — JSON 422 `insufficient_dat
 Это не авторизация нового сервиса. Новые API адаптера и `/api/explain` требуют
 сессию; существующий legacy fallback не предоставляет доступ к новым scores.
 
+`/api/explain` и `POST /api/inference/predict` принимают JSON до 64 KiB и глубиной
+до 32: иначе 413 `request_too_large` или 400 `invalid_json`. Для `/api/explain` без
+`source` также возможны 409 `source_required`, 403 `source_forbidden` и 404, если
+на момент `ts` наблюдений нет; [правила определения источника](../inference/README.md).
+
 ## Инференс и источник
 
 Flask проверяет пользователя, членство в проекте, активное подключение и

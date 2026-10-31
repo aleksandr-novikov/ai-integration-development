@@ -3,6 +3,12 @@
 {% block content %}
 <h1 class="text-2xl font-semibold">Версии оценок аномалий</h1>
 {% if demo %}<p class="my-4 text-amber-700">Учебная демонстрация. Допуск качества модели не подтверждён.</p>{% endif %}
+{% if unbound %}
+<div role="alert" class="my-4 text-amber-700">
+  <p>Одноимённые таблицы не включены в оценку опубликованной моделью, поэтому не получают оценок и уведомлений. Добавьте их в bindings со своими моделями:</p>
+  <ul>{% for source in unbound %}<li>{{ source.connection_id }} / {{ source.schema_name }} / {{ source.table_name }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
 {% if not entries %}
 <p class="mt-4">Для проекта ещё не выбран источник и опубликованная модель.</p>
 {% else %}

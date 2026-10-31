@@ -14,6 +14,8 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / "docs/course/api/inference.openapi.yaml"
+MAX_JSON_BYTES = 64 * 1024
+MAX_JSON_DEPTH = 32
 
 
 def _number(checker, value):
@@ -29,6 +31,28 @@ FiniteValidator = extend(
     Draft202012Validator,
     type_checker=Draft202012Validator.TYPE_CHECKER.redefine("number", _number),
 )
+
+
+def json_too_deep(raw):
+    """Bound nesting before invoking the recursive JSON decoder."""
+    depth, quoted, escaped = 0, False, False
+    for byte in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == 92:
+                escaped = True
+            elif byte == 34:
+                quoted = False
+        elif byte == 34:
+            quoted = True
+        elif byte in (91, 123):
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                return True
+        elif byte in (93, 125):
+            depth -= 1
+    return False
 
 
 def strict_json(raw):

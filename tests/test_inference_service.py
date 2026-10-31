@@ -1353,11 +1353,12 @@ def test_pr39_incremental_scoring_and_notifications(long_history, monkeypatch):
     client = Anomalies(None)
     entry = config["bindings"][0]
     adapter.score_project(SOURCE["project_id"], client=client)
+    # Every observation is scored; backfill notifies only the current one.
     assert len(client.sent) == len(stamps) - 1
-    assert len(notifications) == len(stamps) - 1
+    assert [args[2] for args in notifications] == [stamps[-1]]
     adapter.score_project(SOURCE["project_id"], client=client)
     assert len(client.sent) == len(stamps) - 1
-    assert len(notifications) == len(stamps) - 1
+    assert len(notifications) == 1
     assert (
         source_storage.insert_prediction(
             {
@@ -1668,3 +1669,1038 @@ def test_pr39_concurrent_model_loads_are_shared_per_key(client, bundles, monkeyp
         responses = list(pool.map(request, [0, 0 if same_version else 1]))
     assert [r.status_code for r in responses] == [200, 200]
     assert len(cold) == (1 if same_version else 2)
+
+
+# --- Independent review of e8e9f03: Н-1..Н-10 ------------------------------
+
+
+def legacy_point(project_id=SOURCE["project_id"], table="orders", age=timedelta(days=3), value=70):
+    """A pre-update observation: seconds precision and no attributed owner."""
+    stamp = (datetime.now(UTC) - age).replace(microsecond=0).isoformat()
+    for metric, number in [("row_count", value), ("null_rate", 0.5)]:
+        storage.save_metrics(
+            [{"ts": stamp, "table_name": table, "metric_name": metric, "value": number}],
+            project_id,
+        )
+    return stamp
+
+
+def capture_prompts(monkeypatch):
+    from app import llm
+
+    prompts = []
+
+    def nim(prompt):
+        prompts.append(prompt)
+        return json.dumps({"explanation": "llm", "suggested_fix": "check", "confidence": 0.8})
+
+    monkeypatch.setattr(storage.settings, "NIM_API_KEY", "synthetic")
+    monkeypatch.setattr(llm, "_call_nim", nim)
+    return prompts
+
+
+def explain_body(stamp, **extra):
+    return {"table": "orders", "metric": "row_count", "ts": stamp, **extra}
+
+
+def score_line(stamp):
+    return f"Isolation Forest score at {stamp[:16].replace('T', ' ')} UTC: "
+
+
+@pytest.mark.parametrize("bindings", [True, False], ids=["bindings", "no-bindings"])
+def test_review_old_anomaly_is_explained_after_update(ui, monkeypatch, bindings):
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    if not bindings:
+        monkeypatch.delenv("INFERENCE_ADAPTER_CONFIG")
+    stamp = legacy_point()
+    storage.save_anomaly_scores(
+        [{"ts": stamp, "table_name": "orders", "score": -0.4321, "is_anomaly": 1}],
+        SOURCE["project_id"],
+    )
+    response = http.post("/api/explain", json=explain_body(stamp))
+    assert response.status_code == 200, response.text
+    assert score_line(stamp) + "-0.4321" in prompts[0]
+    with storage.get_engine().connect() as conn:
+        # Neither the history nor its explanation acquires an unconfirmed owner.
+        assert conn.execute(text("SELECT DISTINCT connection_id FROM llm_explanations")).scalar() == (
+            "legacy-unknown"
+        )
+        assert (
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM metrics WHERE ts = :ts AND connection_id = 'legacy-unknown'"
+                ),
+                {"ts": stamp},
+            ).scalar()
+            == 2
+        )
+    assert source_storage.context_source(SOURCE["project_id"], "orders", stamp, "row_count") is None
+
+
+def test_review_new_anomaly_in_mixed_history_keeps_its_source(ui):
+    _, http, _ = ui
+    legacy_point()
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    assert (
+        source_storage.context_source(SOURCE["project_id"], "orders", stamp, "row_count") == SOURCE
+    )
+    assert http.post("/api/explain", json=explain_body(stamp)).status_code == 200
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT connection_id FROM llm_explanations")).scalar() == (
+            SOURCE["connection_id"]
+        )
+
+
+def test_review_old_anomaly_is_not_ambiguous_with_same_named_sources(two_sources, ui, monkeypatch):
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    stamp = legacy_point(value=71)
+    assert http.post("/api/explain", json=explain_body(stamp)).status_code == 200
+    assert ": 71" in prompts[0]
+    assert ": 100" not in prompts[0] and ": 110" not in prompts[0]
+
+
+def test_review_same_named_sources_at_one_time_still_need_a_choice(two_sources, ui):
+    _, http, _ = ui
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    response = http.post("/api/explain", json=explain_body(stamp))
+    assert response.status_code == 409
+    assert response.json == {"error": "source_required"}
+
+
+def test_review_forbidden_observation_stays_forbidden(ui, monkeypatch):
+    from app import llm
+
+    _, http, _ = ui
+    monkeypatch.setattr(llm.settings, "NIM_API_KEY", "")
+    stamp = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    storage.save_metrics(
+        [{"ts": stamp, "table_name": "orders", "metric_name": "row_count", "value": 999}],
+        SOURCE["project_id"],
+        connection_id="deleted-connection",
+        schema_name="public",
+    )
+    response = http.post("/api/explain", json=explain_body(stamp))
+    assert response.status_code == 403
+    assert response.json == {"error": "source_forbidden"}
+
+
+def test_review_legacy_context_excludes_forbidden_rows_at_same_time(ui, monkeypatch):
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    stamp = legacy_point(value=71)
+    storage.save_metrics(
+        [{"ts": stamp, "table_name": "orders", "metric_name": "row_count", "value": 999}],
+        SOURCE["project_id"],
+        connection_id="deleted-connection",
+        schema_name="public",
+    )
+    assert http.post("/api/explain", json=explain_body(stamp)).status_code == 200
+    assert ": 71" in prompts[0]
+    assert "999" not in prompts[0]
+
+
+def test_review_unknown_time_is_not_reported_as_forbidden(ui, monkeypatch):
+    from app import llm
+
+    _, http, _ = ui
+    monkeypatch.setattr(llm.settings, "NIM_API_KEY", "")
+    missing = (datetime.now(UTC) - timedelta(days=9)).isoformat()
+    assert http.post("/api/explain", json=explain_body(missing)).status_code == 404
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM llm_explanations")).scalar() == 0
+
+
+def test_review_scores_keep_old_anomaly_after_metrics_retention(ui):
+    _, http, _ = ui
+    stamp = (datetime.now(UTC) - timedelta(days=3)).replace(microsecond=0).isoformat()
+    storage.save_anomaly_scores(
+        [{"ts": stamp, "table_name": "orders", "score": -0.4321, "is_anomaly": 1}],
+        SOURCE["project_id"],
+    )
+    assert http.post("/api/explain", json=explain_body(stamp)).status_code == 200
+
+
+def test_review_foreign_project_history_is_invisible(ui):
+    _, http, _ = ui
+    storage.create_project("project-b", "u", "B", "b")
+    stamp = legacy_point(project_id="project-b", table="invoices")
+    assert http.post("/api/explain", json={**explain_body(stamp), "table": "invoices"}).status_code == 404
+    # The caller is not a member of this project even when the row is legacy.
+    storage.create_user("other", "other@example.test", "unused")
+    storage.create_project("project-c", "other", "C", "c")
+    stamp = legacy_point(project_id="project-c", table="invoices")
+    assert http.post("/api/explain", json={**explain_body(stamp), "table": "invoices"}).status_code == 404
+
+
+def test_review_explicit_source_outside_default_window_is_found(ui, monkeypatch):
+    from app import llm
+
+    _, http, _ = ui
+    monkeypatch.setattr(llm.settings, "NIM_API_KEY", "")
+    stamp = (datetime.now(UTC) - timedelta(days=45)).isoformat()
+    other = {**SOURCE, "table_name": "archive"}
+    for metric in ("row_count", "null_rate"):
+        storage.save_metrics(
+            [{"ts": stamp, "table_name": "archive", "metric_name": metric, "value": 1}],
+            SOURCE["project_id"],
+            connection_id=SOURCE["connection_id"],
+            schema_name="public",
+        )
+    body = {"source": other, "table": "archive", "metric": "row_count", "ts": stamp}
+    assert http.post("/api/explain", json=body).status_code == 200
+
+
+def changepoint(stamp, before=100.0, after=500.0):
+    return {
+        "ts": stamp,
+        "table_name": "orders",
+        "metric_name": "row_count",
+        "score": 3.0,
+        "value_before": before,
+        "value_after": after,
+    }
+
+
+def test_review_legacy_score_and_changepoint_reach_the_prompt(ui, monkeypatch):
+    """Standard path: collector history with an owner, legacy detector results."""
+    from app import llm
+
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    monkeypatch.delenv("INFERENCE_ADAPTER_CONFIG")
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    earlier = (datetime.fromisoformat(stamp) - timedelta(days=1)).isoformat()
+    storage.save_anomaly_scores(
+        [{"ts": stamp, "table_name": "orders", "score": -0.4321, "is_anomaly": 1}],
+        SOURCE["project_id"],
+    )
+    storage.save_changepoints([changepoint(earlier)], project_id=SOURCE["project_id"])
+
+    assert http.post("/api/explain", json=explain_body(stamp)).status_code == 200
+    # The notification path enters without an HTTP request or a cached result.
+    llm.explain_anomaly("orders", "row_count", stamp, SOURCE["project_id"])
+
+    assert len(prompts) == 2
+    for prompt in prompts:
+        assert score_line(stamp) + "-0.4321" in prompt
+        assert "row_count: 100.00 → 500.00" in prompt
+
+
+def fixed_scores(score=-0.5, anomalous=lambda body: True, sent=None):
+    """HTTP boundary answering with a chosen score, keeping the wire identity."""
+
+    class Client:
+        def __init__(self):
+            self.sent = [] if sent is None else sent
+
+        def post(self, url, json=None, **kwargs):
+            self.sent.append((json["source"]["connection_id"], json["observed_at"]))
+            identity = ("source", "model_version", "feature_schema_version", "observed_at")
+            value = score(json) if callable(score) else score
+            return httpx.Response(
+                200,
+                json={
+                    **{key: json[key] for key in identity},
+                    "score": value,
+                    "threshold": 0.0,
+                    "is_anomaly": anomalous(json),
+                    "demo": True,
+                },
+            )
+
+    return Client()
+
+
+def test_review_active_model_score_reaches_the_prompt(ui, monkeypatch):
+    _, http, config = ui
+    prompts = capture_prompts(monkeypatch)
+    adapter.score_project(SOURCE["project_id"], client=fixed_scores(-0.1234))
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    # Same observation scored by another version and the legacy detector.
+    source_storage.save_prediction(
+        {
+            "source": SOURCE,
+            "model_version": "other-version",
+            "feature_schema_version": "1.0.0",
+            "observed_at": stamp,
+            "score": -0.9999,
+            "is_anomaly": True,
+            "demo": True,
+        }
+    )
+    storage.save_anomaly_scores(
+        [{"ts": stamp, "table_name": "orders", "score": -0.8888, "is_anomaly": 1}],
+        SOURCE["project_id"],
+    )
+    assert http.post("/api/explain", json=explain_body(stamp, source=SOURCE)).status_code == 200
+    assert score_line(stamp) + "-0.1234" in prompts[0]
+    assert "-0.9999" not in prompts[0] and "-0.8888" not in prompts[0]
+
+
+def test_review_source_context_never_uses_other_connection(two_sources, ui, monkeypatch):
+    _, http, _ = ui
+    app, config, first = two_sources
+    prompts = capture_prompts(monkeypatch)
+    other = first["source"]
+    scores = {SOURCE["connection_id"]: -0.1111, other["connection_id"]: -0.2222}
+    client = fixed_scores(lambda body: scores[body["source"]["connection_id"]])
+    adapter.score_project(SOURCE["project_id"], client=client)
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    storage.save_anomaly_scores(
+        [{"ts": stamp, "table_name": "orders", "score": -0.8888, "is_anomaly": 1}],
+        SOURCE["project_id"],
+    )
+    storage.save_changepoints(
+        [changepoint((datetime.fromisoformat(stamp) - timedelta(days=1)).isoformat())],
+        project_id=SOURCE["project_id"],
+    )
+    for source, expected in [(SOURCE, "-0.1111"), (other, "-0.2222")]:
+        body = explain_body(stamp, source=source)
+        assert http.post("/api/explain", json=body).status_code == 200
+        assert score_line(stamp) + expected in prompts[-1]
+        # Change-points have no source key: two owners make them unattributable.
+        assert "500.00" not in prompts[-1]
+        assert "-0.8888" not in prompts[-1]
+
+
+def test_review_legacy_score_needs_one_attributed_owner(ui, monkeypatch):
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    monkeypatch.delenv("INFERENCE_ADAPTER_CONFIG")
+    storage.create_connection(
+        connection_id="connection-b",
+        project_id=SOURCE["project_id"],
+        name="B",
+        dsn_encrypted=b"unused",
+    )
+    add_history({**SOURCE, "connection_id": "connection-b"}, [7], [999])
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    storage.save_anomaly_scores(
+        [{"ts": stamp, "table_name": "orders", "score": -0.4321, "is_anomaly": 1}],
+        SOURCE["project_id"],
+    )
+    storage.save_changepoints(
+        [changepoint((datetime.fromisoformat(stamp) - timedelta(days=1)).isoformat())],
+        project_id=SOURCE["project_id"],
+    )
+    assert http.post("/api/explain", json=explain_body(stamp)).status_code == 200
+    assert score_line(stamp) + "not available" in prompts[0]
+    assert "500.00" not in prompts[0]
+
+
+def test_review_missing_score_stays_not_available(ui, monkeypatch):
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    assert http.post("/api/explain", json=explain_body(stamp, source=SOURCE)).status_code == 200
+    assert score_line(stamp) + "not available" in prompts[0]
+
+
+def test_review_future_changepoint_is_not_context(ui, monkeypatch):
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    monkeypatch.delenv("INFERENCE_ADAPTER_CONFIG")
+    stamp = source_storage.metrics(SOURCE, "row_count")[0]["ts"]
+    later = (datetime.fromisoformat(stamp) + timedelta(minutes=5)).isoformat()
+    storage.save_changepoints([changepoint(later)], project_id=SOURCE["project_id"])
+    assert http.post("/api/explain", json=explain_body(stamp)).status_code == 200
+    assert "500.00" not in prompts[0]
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+    """Real notify_anomaly and throttle; only the Telegram transport is replaced."""
+    from app.notifications import telegram
+
+    sent = []
+    monkeypatch.setattr(
+        telegram, "load_project_telegram_config", lambda pid: ("synthetic", "chat", 30)
+    )
+    monkeypatch.setattr(
+        telegram, "send_message", lambda body, **kwargs: sent.append(body) or (True, None)
+    )
+    return sent
+
+
+def clear_throttle():
+    with storage.get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM telegram_throttle"))
+
+
+def alert_time(body):
+    return re.search(r"Время: (.+) UTC", body).group(1)
+
+
+def minute(stamp):
+    return stamp[:16].replace("T", " ")
+
+
+def replace_history(source, minutes_back):
+    with storage.get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM metrics"))
+    add_history(source, minutes_back, [100 + i for i in range(len(minutes_back))])
+    return [row["ts"] for row in source_storage.metrics(source, "row_count")]
+
+
+def tick(project_id=SOURCE["project_id"], client=None):
+    client = client or fixed_scores()
+    adapter.score_project(project_id, client=client)
+    return client
+
+
+def test_review_first_backfill_alerts_only_the_current_observation(ui, alerts):
+    stamps = replace_history(SOURCE, [15 * i for i in range(20, 0, -1)])
+    client = tick()
+    assert len(client.sent) == len(stamps) - 1
+    assert [alert_time(body) for body in alerts] == [minute(stamps[-1])]
+
+
+def test_review_backfill_of_stale_history_is_silent(ui, alerts):
+    stamps = replace_history(SOURCE, [24 * 60 * i for i in range(20, 0, -1)])
+    client = tick()
+    assert len(client.sent) == len(stamps) - 1
+    assert alerts == []
+
+
+def test_review_new_anomaly_after_backfill_is_delivered(ui, alerts):
+    replace_history(SOURCE, [24 * 60 * i for i in range(20, 0, -1)])
+    tick()
+    add_history(SOURCE, [1], [999])
+    tick()
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    assert [alert_time(body) for body in alerts] == [minute(stamp)]
+
+
+def test_review_one_new_normal_result_is_silent(ui, alerts):
+    stamps = replace_history(SOURCE, [60, 45, 30])
+    tick(client=fixed_scores(anomalous=lambda body: body["observed_at"] != stamps[-1]))
+    assert alerts == []
+
+
+def test_review_several_new_results_alert_the_newest(ui, alerts):
+    replace_history(SOURCE, [24 * 60 * i for i in range(5, 0, -1)])
+    tick()
+    add_history(SOURCE, [50, 40, 30], [1, 2, 3])
+    tick()
+    newest = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    assert [alert_time(body) for body in alerts] == [minute(newest)]
+    tick()
+    assert len(alerts) == 1
+
+
+def test_review_newest_anomalous_result_is_selected_by_canonical_time(ui, alerts):
+    replace_history(SOURCE, [24 * 60 * i for i in range(5, 0, -1)])
+    tick()
+    add_history(SOURCE, [50, 40, 30], [1, 2, 3])
+    rows = source_storage.metrics(SOURCE, "row_count")
+    anomaly = rows[-2]["ts"]
+    tick(client=fixed_scores(anomalous=lambda body: body["observed_at"] != rows[-1]["ts"]))
+    assert [alert_time(body) for body in alerts] == [minute(anomaly)]
+
+
+def test_review_version_switch_and_rollback_alert_only_fresh_events(ui, alerts):
+    _, _, config = ui
+    stamps = replace_history(SOURCE, [15 * i for i in range(20, 0, -1)])
+    tick()
+    assert [alert_time(body) for body in alerts] == [minute(stamps[-1])]
+    clear_throttle()
+
+    original = config["bindings"][0]["model_version"]
+    filename = Path(os.environ["INFERENCE_ADAPTER_CONFIG"])
+
+    def switch(version):
+        config["bindings"][0]["model_version"] = version
+        filename.write_text(json.dumps(config))
+
+    switch("next-version")
+    tick()  # Full recalculation with no new observation is not an event.
+    assert len(alerts) == 1
+    add_history(SOURCE, [1], [999])
+    tick()
+    fresh = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    assert [alert_time(body) for body in alerts[1:]] == [minute(fresh)]
+    clear_throttle()
+
+    switch(original)
+    tick()  # Rollback recalculates what the other version already reported.
+    assert len(alerts) == 2
+
+
+def test_review_stale_backfill_does_not_occupy_the_throttle_window(ui, alerts):
+    from app.metrics_storage import is_throttled
+
+    replace_history(SOURCE, [24 * 60 * i for i in range(20, 0, -1)])
+    tick()
+    assert not is_throttled(SOURCE["project_id"], "orders", "anomaly", throttle_minutes=30)
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM telegram_throttle")).scalar() == 0
+
+
+def test_review_second_event_inside_the_throttle_window_is_suppressed(ui, alerts):
+    replace_history(SOURCE, [24 * 60 * i for i in range(5, 0, -1)])
+    tick()
+    add_history(SOURCE, [10], [1])
+    tick()
+    add_history(SOURCE, [5], [2])
+    tick()
+    assert len(alerts) == 1
+
+
+def test_review_claimed_event_survives_source_failure_later_in_the_tick(ui, alerts):
+    replace_history(SOURCE, [24 * 60 * i for i in range(5, 0, -1)])
+    tick()
+    add_history(SOURCE, [20, 10], [1, 2])
+    rows = source_storage.metrics(SOURCE, "row_count")
+    good = fixed_scores()
+
+    class FailsOnLast:
+        def post(self, url, json=None, **kwargs):
+            if json["observed_at"] == rows[-1]["ts"]:
+                return httpx.Response(503, json={"error": {"code": "down"}})
+            return good.post(url, json=json, **kwargs)
+
+    tick(client=FailsOnLast())
+    assert [alert_time(body) for body in alerts] == [minute(rows[-2]["ts"])]
+
+
+def run_concurrently(calls):
+    import threading
+
+    barrier = threading.Barrier(len(calls))
+    results = [None] * len(calls)
+    failures = []
+
+    def worker(index, call):
+        barrier.wait(timeout=10)
+        try:
+            results[index] = call()
+        except BaseException as exc:  # Reported to the test below.
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=(index, call)) for index, call in enumerate(calls)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert failures == []
+    return results
+
+
+def test_review_concurrent_ticks_alert_once(ui, alerts):
+    replace_history(SOURCE, [24 * 60 * i for i in range(5, 0, -1)])
+    tick()
+    add_history(SOURCE, [20, 10], [1, 2])
+    run_concurrently([tick, tick, tick, tick])
+    assert len(alerts) == 1
+    newest = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    assert alert_time(alerts[0]) == minute(newest)
+
+
+def test_review_worker_with_an_older_claim_yields_to_the_newest_anomaly(ui, alerts):
+    stamps = replace_history(SOURCE, [20, 15, 10])
+    entry = ui[2]["bindings"][0]
+    older, newest = (
+        {
+            "source": SOURCE,
+            "model_version": entry["model_version"],
+            "feature_schema_version": "1.0.0",
+            "observed_at": stamp,
+            "score": -0.5,
+            "is_anomaly": True,
+            "demo": True,
+        }
+        for stamp in stamps[-2:]
+    )
+    assert source_storage.insert_prediction(older) and source_storage.insert_prediction(newest)
+    adapter._alert_new_event(older, stamps[0])
+    assert alerts == []
+    adapter._alert_new_event(newest, stamps[0])
+    assert [alert_time(body) for body in alerts] == [minute(stamps[-1])]
+
+
+def test_review_atomic_claim_has_one_winner(ui):
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    result = {
+        "source": SOURCE,
+        "model_version": "claimed-version",
+        "feature_schema_version": "1.0.0",
+        "observed_at": stamp,
+        "score": -0.5,
+        "is_anomaly": True,
+        "demo": True,
+    }
+    results = run_concurrently([lambda: source_storage.insert_prediction(result)] * 8)
+    assert sorted(results) == [False] * 7 + [True]
+    assert len(source_storage.scores(SOURCE, "claimed-version", "1.0.0")) == 1
+    # A later contender must also lose and leave the stored result untouched.
+    assert source_storage.insert_prediction({**result, "score": -0.9}) is False
+    assert source_storage.scores(SOURCE, "claimed-version", "1.0.0")[0]["score"] == -0.5
+
+
+@pytest.fixture
+def same_named(two_sources, alerts):
+    """Two connections of one project serve `orders`; both report one anomaly."""
+    app, config, first = two_sources
+    other = first["source"]
+    for source in (SOURCE, other):
+        with storage.get_engine().begin() as conn:
+            conn.execute(text("DELETE FROM metrics WHERE connection_id = :id"), {"id": source["connection_id"]})
+    add_history(SOURCE, [60, 30, 10], [100, 110, 500])
+    add_history(other, [55, 25, 5], [200, 210, 900])
+    return app, config, other
+
+
+def test_review_same_named_connections_alert_independently(same_named, alerts, monkeypatch):
+    prompts = capture_prompts(monkeypatch)
+    monkeypatch.setenv("FF_LLM_NOTIFICATIONS", "1")
+    _, config, other = same_named
+    scores = {SOURCE["connection_id"]: -0.1111, other["connection_id"]: -0.2222}
+    client = tick(client=fixed_scores(lambda body: scores[body["source"]["connection_id"]]))
+    assert len(client.sent) == 4
+
+    assert len(source_storage.scores(SOURCE, config["bindings"][1]["model_version"], "1.0.0")) == 2
+    assert len(source_storage.scores(other, config["bindings"][0]["model_version"], "1.0.0")) == 2
+
+    assert len(alerts) == 2
+    by_connection = {
+        next(
+            key
+            for key in (SOURCE["connection_id"], other["connection_id"])
+            if key in body.split("\n\n")[0]
+        ): body
+        for body in alerts
+    }
+    assert set(by_connection) == set(scores)
+    assert "Score: -0.1111" in by_connection[SOURCE["connection_id"]]
+    assert "Score: -0.2222" in by_connection[other["connection_id"]]
+    assert alerts[0].split("\n\n")[0] != alerts[1].split("\n\n")[0]
+
+    assert len(prompts) == 2
+    joined = {re.search(r"Isolation Forest score at .*: (\S+)", p).group(1): p for p in prompts}
+    assert set(joined) == {"-0.1111", "-0.2222"}
+    assert ": 500" in joined["-0.1111"] and ": 900" not in joined["-0.1111"]
+    assert ": 900" in joined["-0.2222"] and ": 500" not in joined["-0.2222"]
+
+    tick()
+    assert len(alerts) == 2
+    assert len(prompts) == 2
+
+
+def test_review_throttle_is_scoped_by_full_source(ui, alerts):
+    from app.notifications.telegram import notify_anomaly
+
+    stamp = datetime.now(UTC).isoformat()
+    config = {"bot_token": "x", "chat_id": "c", "throttle_minutes": 30}
+    sources = [
+        SOURCE,
+        {**SOURCE, "connection_id": "connection-b"},
+        {**SOURCE, "schema_name": "sales"},
+    ]
+    for source in sources:
+        notify_anomaly(SOURCE["project_id"], "orders", stamp, -0.5, source=source, **config)
+        notify_anomaly(SOURCE["project_id"], "orders", stamp, -0.5, source=source, **config)
+    assert len(alerts) == 3
+    notify_anomaly(
+        SOURCE["project_id"], "orders", stamp, -0.5, metric="null_rate", source=SOURCE, **config
+    )
+    assert len(alerts) == 4
+
+
+def test_review_legacy_notification_is_unchanged(ui, alerts, monkeypatch):
+    from app.notifications.telegram import notify_anomaly
+
+    stamp = datetime.now(UTC).isoformat()
+    config = {"bot_token": "x", "chat_id": "c", "throttle_minutes": 30}
+    notify_anomaly(SOURCE["project_id"], "orders", stamp, -0.5, **config)
+    notify_anomaly(SOURCE["project_id"], "orders", stamp, -0.5, **config)
+    assert len(alerts) == 1
+    assert "Подключение" not in alerts[0]
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT event_key FROM telegram_throttle")).scalar() == "anomaly"
+
+
+def test_review_notification_passes_full_source_to_explanation(two_sources, alerts, monkeypatch):
+    from app.notifications import telegram
+
+    seen = []
+
+    def explain(table, metric, ts, project_id="legacy", *, source=None):
+        seen.append(source)
+        return {"explanation": "x", "suggested_fix": "y", "confidence": 0.9}
+
+    monkeypatch.setattr(telegram, "explain_anomaly", explain)
+    monkeypatch.setattr(telegram, "is_enabled", lambda name: True)
+    _, _, first = two_sources
+    tick()
+    assert sorted(source["connection_id"] for source in seen) == sorted(
+        [SOURCE["connection_id"], first["source"]["connection_id"]]
+    )
+
+
+def test_review_quality_gate_compares_times_not_strings(ui, monkeypatch):
+    from collectors.per_project import _latest_row_count_at, _passes_alert_quality_gate
+
+    monkeypatch.setattr(storage.settings, "ANOMALY_NOTIFY_MIN_SCORE_MAGNITUDE", 0.01)
+    monkeypatch.setattr(storage.settings, "ANOMALY_NOTIFY_MIN_DELTA_RATIO", 0.2)
+    with storage.get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM metrics"))
+    add_history(SOURCE, [40, 30, 20, 10], [100, 100, 100, 101])
+    stored = stored_ts(SOURCE)[-1]
+    assert stored.endswith(".000000+00:00")
+    for form in (stored, stored.replace(".000000", ""), stored.replace("+00:00", "Z")):
+        assert _latest_row_count_at("orders", SOURCE["project_id"], form) == 101
+        assert not _passes_alert_quality_gate(
+            "orders", {"ts": form, "score": -0.5}, SOURCE["project_id"]
+        )
+    assert _latest_row_count_at("orders", SOURCE["project_id"], "2001-01-01T00:00:00+00:00") is None
+
+
+@pytest.mark.parametrize("value", [["x"], {"a": 1}, 5, 1.5, True, None], ids=str)
+@pytest.mark.parametrize("field", ["model_version", "feature_schema_version"])
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/api/anomalies/orders",
+        "/dashboard/inference",
+        "/api/inference/sources",
+        "/dashboard/",
+        "/dashboard/history",
+    ],
+)
+def test_review_invalid_version_types_are_controlled(ui, field, value, route):
+    app, http, config = ui
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    config["bindings"][0][field] = value
+    Path(os.environ["INFERENCE_ADAPTER_CONFIG"]).write_text(json.dumps(config))
+    response = http.get(route)
+    assert response.status_code in {404, 503}, response.text
+    if response.status_code == 503:
+        error = response.json["error"]
+        assert (error["code"] if isinstance(error, dict) else error) == "invalid_configuration"
+
+
+def test_review_invalid_version_type_stays_inside_its_project(ui):
+    _, http, config = ui
+    config["bindings"].insert(
+        0,
+        {
+            "source": {**SOURCE, "project_id": "other-project"},
+            "model_version": ["x"],
+            "feature_schema_version": {"a": 1},
+        },
+    )
+    Path(os.environ["INFERENCE_ADAPTER_CONFIG"]).write_text(json.dumps(config))
+    assert http.get("/api/inference/sources").status_code == 200
+    with pytest.raises(adapter.AdapterError) as error:
+        adapter.bindings("other-project")
+    assert error.value.code == "invalid_configuration"
+
+
+@pytest.mark.parametrize(
+    "raw,status,code",
+    [
+        ("[" * 60000, 400, "invalid_json"),
+        ('{"a":' * 100000 + "1" + "}" * 100000, 413, "request_too_large"),
+        ('{"table":"' + "x" * 70000 + '"}', 413, "request_too_large"),
+        ("[" * 40 + "]" * 40, 400, "invalid_json"),
+    ],
+    ids=["deep-open", "deep-oversized", "large", "just-too-deep"],
+)
+@pytest.mark.parametrize("route", ["/api/explain", "/api/inference/predict"])
+def test_review_flask_json_limits(ui, route, raw, status, code):
+    app, http, _ = ui
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    response = http.post(route, data=raw, content_type="application/json")
+    assert response.status_code == status, response.text
+    error = response.json["error"]
+    assert (error["code"] if isinstance(error, dict) else error) == code
+
+
+def test_review_flask_json_limits_keep_authentication_first(ui):
+    app, _, _ = ui
+    anonymous = app.test_client()
+    raw = "[" * 100000
+    for route in ("/api/explain", "/api/inference/predict"):
+        assert anonymous.post(route, data=raw, content_type="application/json").status_code == 401
+
+
+def test_review_flask_json_limits_keep_valid_nested_requests(ui):
+    _, http, config = ui
+    response = http.post("/api/inference/predict", json=config["bindings"][0])
+    assert response.status_code == 200, response.text
+    assert http.post("/api/explain", data="{broken", content_type="application/json").status_code == 400
+    assert http.post("/api/inference/predict", data="{broken", content_type="application/json").status_code == 422
+    assert http.post("/api/explain", data='{"a": 1}', content_type="text/plain").status_code == 400
+
+
+def test_review_manual_score_of_the_newest_observation_alerts_once(ui, alerts, monkeypatch):
+    app, http, config = ui
+    app.config["INFERENCE_HTTP_CLIENT"] = fixed_scores()
+    entry = config["bindings"][0]
+    assert http.post("/api/inference/predict", json=entry).status_code == 200
+    stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+    assert [alert_time(body) for body in alerts] == [minute(stamp)]
+    clear_throttle()
+    assert http.post("/api/inference/predict", json=entry).status_code == 200
+    tick()
+    assert len(alerts) == 1
+
+
+def test_review_manual_score_of_an_old_observation_is_silent(ui, alerts):
+    app, http, config = ui
+    app.config["INFERENCE_HTTP_CLIENT"] = fixed_scores()
+    replace_history(SOURCE, [24 * 60 * i for i in range(3, 0, -1)])
+    assert http.post("/api/inference/predict", json=config["bindings"][0]).status_code == 200
+    assert alerts == []
+
+
+def test_review_manual_score_of_inactive_version_is_silent(ui, alerts):
+    app, http, config = ui
+    app.config["INFERENCE_HTTP_CLIENT"] = fixed_scores()
+    entry = {**config["bindings"][0], "model_version": "inactive-version"}
+    assert http.post("/api/inference/predict", json=entry).status_code == 200
+    assert alerts == []
+
+
+def test_review_manual_recalculation_with_active_version_is_silent(ui, alerts):
+    app, http, config = ui
+    app.config["INFERENCE_HTTP_CLIENT"] = fixed_scores()
+    entry = config["bindings"][0]
+    tick(client=fixed_scores(anomalous=lambda body: False))
+    with storage.get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM anomaly_scores WHERE ts = (SELECT MAX(ts) FROM anomaly_scores)"))
+        conn.execute(
+            text(
+                "INSERT INTO anomaly_scores (project_id, connection_id, schema_name, table_name, "
+                "ts, model_version, feature_schema_version, score, is_anomaly, is_demo) VALUES "
+                "(:project_id, :connection_id, :schema_name, :table_name, :ts, 'other', '1.0.0', "
+                "0.1, 0, 1)"
+            ),
+            {**SOURCE, "ts": source_storage.metrics(SOURCE, "row_count")[-1]["ts"]},
+        )
+    assert http.post("/api/inference/predict", json=entry).status_code == 200
+    assert alerts == []
+
+
+def foreign_binding(ui):
+    """A complete, active and allowlisted source of a project the user cannot use."""
+    _, _, config = ui
+    storage.create_user("stranger", "stranger@example.test", "unused")
+    storage.create_project("project-z", "stranger", "Z", "z")
+    storage.create_connection(
+        connection_id="connection-z", project_id="project-z", name="Z", dsn_encrypted=b"unused"
+    )
+    foreign = {**SOURCE, "project_id": "project-z", "connection_id": "connection-z"}
+    add_history(foreign, [30, 15], [1000, 2000])
+    entry = {**config["bindings"][0], "source": foreign}
+    config["bindings"].append(entry)
+    Path(os.environ["INFERENCE_ADAPTER_CONFIG"]).write_text(json.dumps(config))
+    return entry
+
+
+def test_review_project_scope_blocks_a_valid_foreign_binding(ui):
+    app, http, _ = ui
+    app.config["INFERENCE_HTTP_CLIENT"] = fixed_scores(-0.7777)
+    entry = foreign_binding(ui)
+    foreign = entry["source"]
+    stamp = source_storage.metrics(foreign, "row_count")[-1]["ts"]
+
+    assert http.post("/api/inference/predict", json=entry).status_code == 403
+    response = http.post("/api/explain", json=explain_body(stamp, source=foreign))
+    assert response.status_code == 403
+    assert "1000" not in response.text and "2000" not in response.text
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM anomaly_scores")).scalar() == 0
+        assert conn.execute(text("SELECT COUNT(*) FROM llm_explanations")).scalar() == 0
+
+
+def test_review_project_query_parameter_cannot_select_foreign_data(ui):
+    _, http, _ = ui
+    entry = foreign_binding(ui)
+    foreign = entry["source"]
+    response = http.get("/api/inference/metrics", query_string=foreign)
+    # The session project replaces the parameter: connection-z is not in project-a.
+    assert response.status_code == 403
+    assert "1000" not in response.text
+
+
+def test_review_mixed_serving_of_one_table_is_reported(ui, caplog):
+    storage.create_connection(
+        connection_id="connection-b",
+        project_id=SOURCE["project_id"],
+        name="B",
+        dsn_encrypted=b"unused",
+    )
+    other = {**SOURCE, "connection_id": "connection-b"}
+    add_history(other, [20, 10], [1, 2])
+    assert adapter.unbound_sources(SOURCE["project_id"]) == [other]
+    caplog.set_level(logging.WARNING)
+    tick()
+    assert "connection-b" in caplog.text and "unsupported" in caplog.text
+
+
+def test_review_full_binding_of_one_table_is_not_reported(two_sources, caplog):
+    assert adapter.unbound_sources(SOURCE["project_id"]) == []
+    caplog.set_level(logging.WARNING)
+    tick()
+    assert "unsupported" not in caplog.text
+
+
+@pytest.fixture
+def collect(ui, monkeypatch, alerts):
+    """A real collector tick; only the monitored database and HTTP model are simulated."""
+    from unittest import mock
+
+    from cryptography.fernet import Fernet
+
+    import app.db as db_mod
+    from app import crypto
+    from collectors import metrics_collector, per_project
+
+    monkeypatch.setenv("FERNET_KEY", Fernet.generate_key().decode())
+    crypto.reset_for_tests()
+    with storage.get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE connections SET dsn_encrypted = :dsn"),
+            {"dsn": crypto.encrypt_dsn("postgresql://u:p@unreachable:5432/d")},
+        )
+    scoring = {"client": fixed_scores(-0.4321)}
+    original = adapter.score_project
+    monkeypatch.setattr(
+        adapter, "score_project", lambda pid: original(pid, client=scoring["client"])
+    )
+
+    def run(connection_id, row_count=500, null_rate=0.02, age=timedelta(0)):
+        def rows(table, ts=None):
+            stamp = ts - age
+            return [
+                {"ts": stamp, "table_name": table, "metric_name": "row_count", "value": row_count},
+                {"ts": stamp, "table_name": table, "metric_name": "null_rate", "value": null_rate},
+            ]
+
+        with (
+            mock.patch.object(metrics_collector.MetricsCollector, "collect", side_effect=rows),
+            mock.patch.object(
+                db_mod.PostgresAdapter,
+                "list_tables",
+                autospec=True,
+                side_effect=lambda self, schema: [{"table_name": "orders", "schema": schema}],
+            ),
+            mock.patch("collectors.schema_collector.collect_table_schema", return_value=None),
+        ):
+            per_project.collect_for_connection(SOURCE["project_id"], connection_id)
+        return source_storage.metrics(
+            {**SOURCE, "connection_id": connection_id}, "row_count"
+        )[-1]["ts"]
+
+    run.scoring = scoring
+    return run
+
+
+def legacy_detector(monkeypatch, score=-0.4321):
+    """Published-model-free install: the persisted detector reports the newest tick."""
+    rows = []
+
+    def score_table(table, window_days=14, project_id="legacy"):
+        stamp = source_storage.metrics(SOURCE, "row_count")[-1]["ts"]
+        rows.append(stamp)
+        return [{"ts": stamp, "score": score, "is_anomaly": 1}]
+
+    monkeypatch.setattr("ml.anomaly_detector.score_table", score_table)
+    return rows
+
+
+def test_review_scenario_a_old_anomaly_after_update(ui, collect, monkeypatch):
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    monkeypatch.delenv("INFERENCE_ADAPTER_CONFIG")
+    legacy_detector(monkeypatch)
+    stamp = legacy_point(value=71)
+    storage.save_anomaly_scores(
+        [{"ts": stamp, "table_name": "orders", "score": -0.2468, "is_anomaly": 1}],
+        SOURCE["project_id"],
+    )
+    collect(SOURCE["connection_id"])
+    listed = http.get("/api/anomalies/orders?range=7d").json
+    old = next(row for row in listed if row["ts"].startswith(stamp[:19]))
+    response = http.post("/api/explain", json=explain_body(old["ts"]))
+    assert response.status_code == 200, response.text
+    assert score_line(stamp) + "-0.2468" in prompts[-1]
+    assert ": 71" in prompts[-1] and ": 500" not in prompts[-1]
+
+
+def test_review_scenario_b_collection_score_explanation_alert(ui, collect, alerts, monkeypatch):
+    _, http, config = ui
+    prompts = capture_prompts(monkeypatch)
+    monkeypatch.setenv("FF_LLM_NOTIFICATIONS", "1")
+    storage.save_changepoints(
+        [changepoint((datetime.now(UTC) - timedelta(days=1)).isoformat())],
+        project_id=SOURCE["project_id"],
+    )
+    stamp = collect(SOURCE["connection_id"])
+
+    # Stored under the active pair and full source, and sent exactly once.
+    entry = config["bindings"][0]
+    stored = source_storage.scores(SOURCE, entry["model_version"], "1.0.0")
+    assert stored[-1]["ts"] == stamp and stored[-1]["score"] == -0.4321
+    assert [alert_time(body) for body in alerts] == [minute(stamp)]
+    assert "Подключение: A (connection-a)" in alerts[0]
+    assert "Score: -0.4321" in alerts[0]
+    # The notification itself carried the real context.
+    assert score_line(stamp) + "-0.4321" in prompts[-1]
+    assert "row_count: 100.00 → 500.00" in prompts[-1]
+
+    listed = http.get("/api/anomalies/orders?range=7d").json
+    row = next(item for item in listed if item["ts"].startswith(stamp[:19]))
+    response = http.post("/api/explain", json=explain_body(row["ts"], source=row["source"]))
+    assert response.status_code == 200, response.text
+    assert score_line(stamp) + "-0.4321" in prompts[-1]
+
+
+def test_review_scenario_c_backfill_then_fresh_event(ui, collect, alerts):
+    replace_history(SOURCE, [24 * 60 * i for i in range(29, 0, -1)])
+    fresh = collect(SOURCE["connection_id"], age=timedelta(minutes=5))
+    # The tick recalculated a month of history and reported only its own point.
+    assert len(collect.scoring["client"].sent) == 29
+    assert [alert_time(body) for body in alerts] == [minute(fresh)]
+    clear_throttle()
+    fresher = collect(SOURCE["connection_id"], row_count=900)
+    assert [alert_time(body) for body in alerts[1:]] == [minute(fresher)]
+
+
+def test_review_scenario_d_two_sources_in_collection(two_sources, ui, collect, alerts):
+    _, config, first = two_sources
+    other = first["source"]
+    collect(SOURCE["connection_id"])
+    collect(other["connection_id"])
+    assert len(alerts) == 2
+    assert {SOURCE["connection_id"], other["connection_id"]} == {
+        re.search(r"Подключение: \S+ \((.+)\)", body).group(1) for body in alerts
+    }
+    for entry in config["bindings"]:
+        assert source_storage.scores(entry["source"], entry["model_version"], "1.0.0")
+    before = len(collect.scoring["client"].sent)
+    adapter.score_project(SOURCE["project_id"])
+    assert len(collect.scoring["client"].sent) == before
+    assert len(alerts) == 2
+
+
+def test_review_scenario_f_standard_install_keeps_legacy_alerts(ui, collect, alerts, monkeypatch):
+    _, http, _ = ui
+    prompts = capture_prompts(monkeypatch)
+    monkeypatch.setenv("FF_LLM_NOTIFICATIONS", "1")
+    monkeypatch.delenv("INFERENCE_ADAPTER_CONFIG")
+    legacy_detector(monkeypatch)
+    stamp = collect(SOURCE["connection_id"])
+    assert collect.scoring["client"].sent == []
+    assert len(alerts) == 1
+    assert "Подключение" not in alerts[0]
+    assert score_line(stamp) + "-0.4321" in prompts[-1]
+    with storage.get_engine().connect() as conn:
+        assert conn.execute(text("SELECT event_key FROM telegram_throttle")).scalar() == "anomaly"
+    assert storage.get_anomaly_scores("orders", SOURCE["project_id"])[-1]["score"] == -0.4321
+    assert http.get("/dashboard/history").status_code == 200

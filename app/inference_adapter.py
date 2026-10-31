@@ -6,6 +6,7 @@ import logging
 import math
 import os
 from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -36,6 +37,13 @@ SOURCE_ERRORS = (
 )
 # Refusals tied to one observation; later observations stay scorable.
 OBSERVATION_ERRORS = frozenset({"invalid_history", "insufficient_history", "invalid_input"})
+VERSION_FIELDS = ("model_version", "feature_schema_version")
+# Notifications concern current events. After an outage unreported observations
+# stay relevant for the reach of the legacy per-tick scoring window.
+MAX_EVENT_AGE = timedelta(days=1)
+# Without any stored result only a just collected observation is an event.
+MIN_FRESHNESS = timedelta(minutes=30)
+FRESH_COLLECTIONS = 2
 
 
 def configuration():
@@ -72,8 +80,10 @@ def bindings(project_id):
     try:
         for entry in entries:
             source_storage.source_params(entry["source"])
-            if not all(key in entry for key in ("model_version", "feature_schema_version")):
-                raise ValueError("missing binding versions")
+            # The contract refines the values per source; a wrong type has no
+            # usable meaning anywhere, from SQL parameters to UI labels.
+            if not all(isinstance(entry.get(key), str) for key in VERSION_FIELDS):
+                raise ValueError("binding versions must be strings")
         identities = [tuple(sorted(entry["source"].items())) for entry in entries]
         if len(set(identities)) != len(identities):
             raise ValueError("duplicate source binding")
@@ -85,6 +95,23 @@ def bindings(project_id):
 
 def is_served(project_id, table):
     return any(entry["source"]["table_name"] == table for entry in bindings(project_id))
+
+
+def unbound_sources(project_id):
+    """Sources sharing a served table name without their own binding.
+
+    A binding moves its table name out of the project-level legacy detector, so
+    these sources are neither scored nor alerted until they are bound as well.
+    """
+    entries = bindings(project_id)
+    bound = [entry["source"] for entry in entries]
+    tables = sorted({source["table_name"] for source in bound})
+    return [
+        source
+        for table in tables
+        for source in source_storage.recent_sources(project_id, table)
+        if source not in bound
+    ]
 
 
 def check_source(source):
@@ -112,10 +139,13 @@ def predict(
     client=None,
     observed_at=None,
     _history=None,
-    _background=False,
     _config=None,
 ):
-    if _history is None:
+    """Score one observation. Only the interactive form reads and stores history;
+    with ``_history`` the caller owns storing the result and its notification.
+    """
+    interactive = _history is None
+    if interactive:
         check_source(source)
         rc = source_storage.metrics(source, "row_count")
         nr = source_storage.metrics(source, "null_rate")
@@ -195,11 +225,14 @@ def predict(
                 raise ValueError("inference identity mismatch")
     except (ValueError, KeyError, ValidationError):
         raise AdapterError(503, "invalid_inference_response") from None
-    if _background:
-        if source_storage.insert_prediction(result) and result["is_anomaly"]:
-            _notify_prediction(result)
-    else:
-        source_storage.save_prediction(result)
+    if interactive:
+        floor = _new_event_floor(source, aligned)
+        if source_storage.insert_prediction(result) and any(
+            entry["source"] == source
+            and all(entry[key] == result[key] for key in VERSION_FIELDS)
+            for entry in bindings(source["project_id"])
+        ):
+            _alert_new_event(result, floor)
     return result
 
 
@@ -216,6 +249,45 @@ def check_binding(model_version, feature_schema_version):
         raise AdapterError(422, "invalid_binding") from None
 
 
+def _new_event_floor(source, times):
+    """Observations after this instant are new events for notifications.
+
+    Backfill, a version switch or a rollback only recalculate observations that
+    the high-water mark of stored results, kept for every version, already covers.
+    With no result at all the newest collected observation alone can be an event.
+    Both limits rely on stored data, so a restart does not change them.
+    """
+    from app.metrics_storage import get_connection
+
+    now = datetime.now(UTC)
+    processed = source_storage.latest_scored_at(source)
+    if processed is not None:
+        return max(processed, canonical_ts((now - MAX_EVENT_AGE).isoformat()))
+    connection = get_connection(source["project_id"], source["connection_id"]) or {}
+    collection = timedelta(minutes=connection.get("interval_minutes", 0))
+    freshness = max(MIN_FRESHNESS, FRESH_COLLECTIONS * collection)
+    return max(times[-2], canonical_ts((now - freshness).isoformat()))
+
+
+def _alert_new_event(result, floor):
+    """Notify about a claimed result; never raises into scoring.
+
+    Concurrent workers claim different observations, so each checks that its
+    candidate is still the newest stored anomaly: one current event, one message.
+    """
+    if result is None or not result["is_anomaly"] or result["observed_at"] <= floor:
+        return
+    source = result["source"]
+    try:
+        newest = source_storage.latest_anomaly_at(
+            source, result["model_version"], result["feature_schema_version"]
+        )
+        if newest == result["observed_at"]:
+            _notify_prediction(result)
+    except Exception:
+        logger.exception("Published anomaly notification failed for source=%s", source)
+
+
 def _notify_prediction(result):
     from app.notifications.telegram import load_project_telegram_config, notify_anomaly
 
@@ -224,22 +296,23 @@ def _notify_prediction(result):
     if cfg is None:
         return
     token, chat, throttle = cfg
-    try:
-        notify_anomaly(
-            source["project_id"],
-            source["table_name"],
-            result["observed_at"],
-            result["score"],
-            bot_token=token,
-            chat_id=chat,
-            throttle_minutes=throttle,
-        )
-    except Exception:
-        logger.exception("Published anomaly notification failed for source=%s", source)
+    notify_anomaly(
+        source["project_id"],
+        source["table_name"],
+        result["observed_at"],
+        result["score"],
+        bot_token=token,
+        chat_id=chat,
+        throttle_minutes=throttle,
+        source=source,
+    )
 
 
 def score_source(entry, *, client=None):
-    """Read history once and score only missing versioned observations."""
+    """Read history once and score only missing versioned observations.
+
+    Every result is stored, and only the newest claimed anomaly can notify.
+    """
     source = entry["source"]
     check_binding(entry["model_version"], entry["feature_schema_version"])
     check_source(source)
@@ -253,29 +326,52 @@ def score_source(entry, *, client=None):
             source, entry["model_version"], entry["feature_schema_version"]
         )
     }
-    for previous, stamp in itertools.pairwise(times):
-        if stamp in existing:
-            continue
-        try:
-            predict(
-                source,
-                entry["model_version"],
-                entry["feature_schema_version"],
-                observed_at=stamp,
-                client=client,
-                _background=True,
-                _config=config,
-                _history=([rc[previous], rc[stamp]], [nr[previous], nr[stamp]]),
-            )
-        except AdapterError as exc:
-            if exc.code not in OBSERVATION_ERRORS:
-                raise
-            logger.warning(
-                "Published inference skipped observed_at=%s for source=%s: %s",
-                stamp,
-                source,
-                exc.code,
-            )
+    missing = [pair for pair in itertools.pairwise(times) if pair[1] not in existing]
+    if not missing:
+        return
+    floor = _new_event_floor(source, times)
+    candidate = None
+    try:
+        for previous, stamp in missing:
+            try:
+                result = predict(
+                    source,
+                    entry["model_version"],
+                    entry["feature_schema_version"],
+                    observed_at=stamp,
+                    client=client,
+                    _config=config,
+                    _history=([rc[previous], rc[stamp]], [nr[previous], nr[stamp]]),
+                )
+            except AdapterError as exc:
+                if exc.code not in OBSERVATION_ERRORS:
+                    raise
+                logger.warning(
+                    "Published inference skipped observed_at=%s for source=%s: %s",
+                    stamp,
+                    source,
+                    exc.code,
+                )
+                continue
+            if source_storage.insert_prediction(result) and result["is_anomaly"]:
+                candidate = result
+    finally:
+        # A later source failure must not cost the event already claimed here.
+        _alert_new_event(candidate, floor)
+
+
+def _warn_unbound_sources(project_id):
+    try:
+        unbound = unbound_sources(project_id)
+    except (OperationalError, PoolTimeoutError):
+        logger.exception("Mixed serving check failed for project=%s", project_id)
+        return
+    if unbound:
+        logger.warning(
+            "unsupported mixed serving: sources without a binding share a served table "
+            "and receive no scores or alerts: %s",
+            unbound,
+        )
 
 
 def score_project(project_id, *, client=None):
@@ -288,6 +384,7 @@ def score_project(project_id, *, client=None):
     message = f"published inference failed for project {project_id}"
     unexpected = []
     entries = bindings(project_id)
+    _warn_unbound_sources(project_id)
     manager = (
         nullcontext(client)
         if client is not None
