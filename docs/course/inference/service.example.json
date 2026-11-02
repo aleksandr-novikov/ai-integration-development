@@ -1,0 +1,12 @@
+{
+  "registry_path": "models/registry",
+  "demo": true,
+  "principals": [
+    {
+      "token_env": "INFERENCE_ADAPTER_TOKEN",
+      "sources": [
+        {"project_id": "project-a", "connection_id": "connection-a", "schema_name": "public", "table_name": "orders"}
+      ]
+    }
+  ]
+}

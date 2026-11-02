@@ -41,7 +41,7 @@ pinned: false
 
 [Актуальная архитектура: компоненты, потоки и ограничения](docs/Architecture.md) · [Решение по Flask и учебному FastAPI-сервису](docs/adr/001-flask-and-inference-service.md) · [Сверка архитектуры с кодом](docs/course/architecture-review.md).
 
-[OpenAPI-контракты: текущий Flask API и проект внутреннего инференса](docs/course/api/README.md).
+[OpenAPI-контракты Flask и внутреннего инференса](docs/course/api/README.md) · [FastAPI, Swagger UI, версии результатов и запуск](docs/course/inference/README.md).
 
 Подготовка датасета для экспериментов: `python -m scripts.generate_ml_dataset --output data/course`.
 

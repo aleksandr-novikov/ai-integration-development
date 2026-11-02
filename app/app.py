@@ -286,6 +286,16 @@ def create_app(config: dict | None = None):
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(api)
+    from .inference_adapter import AdapterError
+    from .inference_api import bp as inference_bp
+
+    @app.errorhandler(AdapterError)
+    def inference_adapter_error(exc):
+        # Blueprint-specific /api/inference errors keep their nested envelope.
+        # Other Flask surfaces must also fail closed on invalid configuration.
+        return jsonify({"error": exc.code}), exc.status
+
+    app.register_blueprint(inference_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(projects_bp)

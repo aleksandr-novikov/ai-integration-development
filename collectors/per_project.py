@@ -529,13 +529,17 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
                         if row_count_metric is not None:
                             rows_observed = int(row_count_metric["value"])
                         if metrics:
-                            rows_saved += save_metrics(metrics, project_id)
+                            rows_saved += save_metrics(
+                                metrics, project_id, connection_id=connection_id, schema_name=ns,
+                            )
                         try:
                             _run_with_timeout(
                                 collect_table_schema,
                                 table_name,
                                 schema=ns,
                                 project_id=project_id,
+                                source={"project_id": project_id, "connection_id": connection_id,
+                                        "schema_name": ns, "table_name": table_name},
                             )
                         except TimeoutError:
                             degraded = True
@@ -753,19 +757,9 @@ def _baseline_median_row_count(table: str, project_id: str) -> float | None:
 
 def _latest_row_count_at(table: str, project_id: str, ts: str) -> float | None:
     """row_count в момент аномальной точки. Если такой записи нет — None."""
-    from sqlalchemy import text
+    from app.metrics_storage import metric_value_at
 
-    from app.metrics_storage import get_engine
-
-    with get_engine().connect() as conn:
-        row = conn.execute(text("""
-            SELECT value FROM metrics
-            WHERE project_id = :pid
-              AND table_name = :table
-              AND metric_name = 'row_count'
-              AND ts = :ts
-        """), {"pid": project_id, "table": table, "ts": ts}).fetchone()
-    return float(row[0]) if row else None
+    return metric_value_at(table, "row_count", project_id, ts)
 
 
 def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:
@@ -779,6 +773,19 @@ def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:
     on the fly. ``InsufficientDataError`` is the "we don't have enough
     history yet" signal, treated as silent skip.
     """
+    from app.inference_adapter import AdapterError, bindings, score_project
+
+    try:
+        served = {e["source"]["table_name"] for e in bindings(project_id)}
+    except AdapterError:
+        logger.exception("[project=%s] invalid inference configuration", project_id)
+        return
+    if served.intersection(table_names):
+        try:
+            score_project(project_id)
+        except Exception:
+            logger.exception("[project=%s] published inference failed", project_id)
+        table_names = [name for name in table_names if name not in served]
     cfg = _load_telegram_config(project_id)
     if cfg is None:
         logger.debug(

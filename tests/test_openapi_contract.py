@@ -1,19 +1,13 @@
-"""Course #4: existing HTTP responses and the proposed inference boundary.
-
-The future /v1/predict endpoint is NOT implemented or mocked here. Its examples
-and input schema are checked; actual HTTP/auth/model integration belongs to #12.
-"""
+"""Contract examples and legacy HTTP; real ASGI coverage is in test_inference_service."""
 
 import copy
 import json
-import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 import yaml
-from jsonschema import Draft202012Validator, FormatChecker, ValidationError
-from jsonschema.validators import extend
+from jsonschema import FormatChecker, ValidationError
 from openapi_spec_validator import validate
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
@@ -22,6 +16,8 @@ from app import metrics_storage as storage
 from app.app import create_app
 from ml import anomaly_detector as detector
 from ml import forecast as forecast_module
+from ml.inference_contract import FiniteValidator as ContractValidator
+from ml.inference_contract import strict_json as _strict_json
 
 CONTRACTS = Path(__file__).resolve().parents[1] / "docs" / "course" / "api"
 LEGACY = yaml.safe_load((CONTRACTS / "legacy.openapi.yaml").read_text(encoding="utf-8"))
@@ -29,37 +25,6 @@ INFERENCE = yaml.safe_load((CONTRACTS / "inference.openapi.yaml").read_text(enco
 ANOMALIES = "/api/anomalies/{table_name}"
 FORECAST = "/api/forecast/{table_name}"
 PREDICT = "/v1/predict"
-
-
-def _finite_number(checker, value):
-    if not Draft202012Validator.TYPE_CHECKER.is_type(value, "number"):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
-
-
-# JSON Schema assumes JSON numbers. Enforce the contract's binary64 policy
-# for host-language values too; this helper is not the future HTTP decoder.
-ContractValidator = extend(
-    Draft202012Validator,
-    type_checker=Draft202012Validator.TYPE_CHECKER.redefine("number", _finite_number),
-)
-
-
-def _strict_json(raw):
-    """Reference decoding policy only; the actual server belongs to #12."""
-    def reject(token):
-        raise ValueError(f"Non-JSON numeric token: {token}")
-
-    def finite_float(token):
-        value = float(token)
-        if not math.isfinite(value):
-            raise ValueError("Number overflows binary64")
-        return value
-
-    return json.loads(raw, parse_constant=reject, parse_float=finite_float, parse_int=finite_float)
 
 
 def _past_stamp():

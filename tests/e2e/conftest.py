@@ -9,6 +9,7 @@ ClickHouse, just the metrics SQLite that the app already speaks.
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 from collections.abc import Iterator
@@ -159,6 +160,15 @@ def browser_context_args(browser_context_args: dict) -> dict:
         **browser_context_args,
         "viewport": {"width": 1280, "height": 800},
     }
+
+
+@pytest.fixture(scope="session")
+def browser_type_launch_args(browser_type_launch_args: dict) -> dict:
+    """Allow a preinstalled Chromium; default remains Playwright's bundled build."""
+    executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+    if executable:
+        return {**browser_type_launch_args, "executable_path": executable}
+    return browser_type_launch_args
 
 
 # --- Screenshot artifact on failure ----------------------------------------

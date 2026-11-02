@@ -1,0 +1,3 @@
+# Offline archive audit and stage-export; the serving process does not need pandas.
+-r requirements-inference.txt
+pandas==2.2.3

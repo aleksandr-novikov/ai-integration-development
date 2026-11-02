@@ -56,6 +56,13 @@ paths:
                 $ref: '#/components/schemas/LegacyError'
               example:
                 error: "range must be one of ['14d', '1h', '24h', '30d', '6h', '7d']"
+        '503':
+          description: Invalid inference adapter configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+              example: {error: invalid_configuration}
         '500':
           $ref: '#/components/responses/InternalError'
   /api/forecast/{table_name}:

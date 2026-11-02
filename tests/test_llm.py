@@ -21,7 +21,7 @@ def _ts() -> str:
 # ---------------------------------------------------------------------------
 
 def test_build_prompt_contains_table_and_ts(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t: [{"name": "id", "type": "int", "nullable": False}])
+    monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t, project_id="legacy": [{"name": "id", "type": "int", "nullable": False}])
     monkeypatch.setattr("app.llm.get_metrics", lambda t, m, p=None, **kw: [])
     monkeypatch.setattr("app.llm.get_changepoints", lambda t, **kw: [])
     monkeypatch.setattr("app.llm.get_anomaly_scores", lambda t, **kw: [])
@@ -37,7 +37,7 @@ def test_build_prompt_contains_table_and_ts(tmp_path, monkeypatch):
 
 def test_build_prompt_includes_both_metrics(tmp_path, monkeypatch):
     """Prompt must include context for both row_count and null_rate regardless of `metric`."""
-    monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t: None)
+    monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t, project_id="legacy": None)
     rc_rows = [{"ts": _ts(), "value": 500.0, "tags": None}]
     nr_rows = [{"ts": _ts(), "value": 0.15, "tags": None}]
     def _fake_metrics(table, metric, project_id=None, **kw):
@@ -143,7 +143,7 @@ def test_rule_based_explain_uses_project_id(monkeypatch):
 
 def test_explain_anomaly_falls_back_on_network_error(monkeypatch):
     monkeypatch.setattr("app.config.settings.NIM_API_KEY", "test-key")
-    monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t: None)
+    monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t, project_id="legacy": None)
     monkeypatch.setattr("app.llm.get_metrics", lambda t, m, p=None, **kw: [])
     monkeypatch.setattr("app.llm.get_changepoints", lambda t, **kw: [])
     monkeypatch.setattr("app.llm.get_anomaly_scores", lambda t, **kw: [])
@@ -273,7 +273,8 @@ def test_explain_endpoint_invalid_metric(client):
 
 def test_explain_endpoint_serves_from_cache(client):
     cached = {"explanation": "кэш", "suggested_fix": "кэш fix", "confidence": 0.6}
-    with patch("app.api.get_cached_explanation", return_value=cached):
+    with patch("app.api.get_cached_explanation", return_value=cached), \
+         patch("app.api._has_project_table_metrics", return_value=True):
         resp = client.post("/api/explain", json={"table": "orders", "metric": "row_count", "ts": _ts()})
     assert resp.status_code == 200
     assert resp.get_json()["explanation"] == "кэш"

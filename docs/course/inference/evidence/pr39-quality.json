@@ -1,0 +1,109 @@
+{
+  "recorded_at": "2026-10-30T17:45:34.433550+00:00",
+  "scope": "Historical local verification of N-5/N-6 on ccfc434; superseded by the current review report.",
+  "pr": "https://github.com/aleksandr-novikov/ai-integration-development/pull/39",
+  "source_parent": "ccfc43485ccdbd111af44d54d3c10232e09d7162",
+  "master_head": "ac0ae04fda308faaf613a3880be84b2d6463f88e",
+  "environment": {
+    "python": "3.12.3",
+    "packages": {
+      "pytest": "8.3.4",
+      "ruff": "0.9.4",
+      "scikit-learn": "1.6.1",
+      "skops": "0.16.0",
+      "numpy": "2.5.4",
+      "pandas": "2.2.3",
+      "Flask": "3.1.3",
+      "fastapi": "0.162.0",
+      "starlette": "1.10.0",
+      "mlflow": "3.16.1",
+      "pyiceberg": "0.12.0"
+    },
+    "dependencies": "Project requirements and development dependencies; portable SQLite CLI 3.45.1",
+    "execution": "OPENBLAS_NUM_THREADS=1, OMP_NUM_THREADS=1"
+  },
+  "fixes": {
+    "N-5": "Enumerate aligned times, validate each prediction pair separately. A corrupt SQLite value affects its own pair and the following pair; subsequent healthy pairs and a healthy latest UI prediction succeed. Shared training feature validation is unchanged.",
+    "N-6": "GET /api/inference/metrics rejects nonnumeric/nonfinite values with 422 invalid_history before JSON serialization using the shared finite-number type checker."
+  },
+  "checks": {
+    "regression_before": {
+      "command": "python -m pytest tests/test_inference_service.py -q -k \"text_middle_point or metrics_rejects\"",
+      "failed": 6,
+      "deselected": 65
+    },
+    "regression_after": {
+      "passed": 6,
+      "failed": 0,
+      "deselected": 65
+    },
+    "profile": {
+      "passed": 291,
+      "failed": 0,
+      "seconds": 68.59,
+      "by_module": {
+        "tests.test_model_registry": 43,
+        "tests.test_inference_service": 71,
+        "tests.test_openapi_contract": 81,
+        "tests.test_inference_migration": 1,
+        "tests.test_scheduler_ml_retrain": 7,
+        "tests.test_per_project": 18,
+        "tests.test_security": 15,
+        "tests.test_auth": 23,
+        "tests.test_llm_audit": 32
+      }
+    },
+    "default_pytest": {
+      "command": "python -m pytest -q --tb=short",
+      "passed": 1314,
+      "failed": 0,
+      "errors": 0,
+      "deselected": 49,
+      "warnings": 7906,
+      "seconds": 228.38,
+      "maximum_rss_kib": 671056,
+      "swaps": 0,
+      "selection": "Repository default excludes integration and e2e. No skips/xfails were added."
+    },
+    "integration": {
+      "command": "python -m pytest -m integration -q -x --tb=short",
+      "status": "environment_error",
+      "selected": 32,
+      "setup_errors": 1,
+      "remaining_not_attempted": 31,
+      "reason": "Docker socket unavailable; no live databases were started."
+    },
+    "e2e": {
+      "command": "python -m pytest -m e2e -q -x --tb=short",
+      "status": "environment_error",
+      "selected": 17,
+      "setup_errors": 1,
+      "remaining_not_attempted": 16,
+      "reason": "Pinned Playwright 1.50.0 requires chromium_headless_shell-1155, which is absent; cache has revision 1194. No extra browser downloaded."
+    },
+    "ruff": {
+      "version": "0.9.4",
+      "status": "passed"
+    },
+    "openapi": {
+      "documents": [
+        "docs/course/api/legacy.openapi.yaml",
+        "docs/course/api/inference.openapi.yaml"
+      ],
+      "status": "passed in test_openapi_contract.py"
+    },
+    "strict_json": {
+      "tracked_files_including_this_report": 20,
+      "status": "passed"
+    },
+    "pip_check": "passed",
+    "git_diff_check": "passed"
+  },
+  "remaining_limits": [
+    "Local integration and E2E could not execute past setup.",
+    "Only Python 3.12 available locally; 3.11/3.13 require current CI.",
+    "No live NIM/Telegram, production DB, Docker deployment or new Swagger/latency run.",
+    "Full-history rescoring still rereads history per observation. Checksums are not external signatures; registry/evaluation evidence require a trusted operator."
+  ],
+  "upgrade": "Back up and stop writers before key migration; rehearse migration/rollback. Existing data stays legacy-unknown without guessing source or model; already overwritten data cannot be recovered."
+}

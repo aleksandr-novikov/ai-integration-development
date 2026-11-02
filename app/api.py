@@ -1,6 +1,6 @@
 from datetime import UTC, timedelta
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from flask_login import current_user
 
 from .db import list_tables, table_schema
@@ -29,6 +29,8 @@ def _current_project_id() -> str:
     ``g.current_project["id"]`` and 401 on miss.
     """
     project = getattr(g, "current_project", None)
+    if current_user.is_authenticated and project is None:
+        return "__no_project__"
     return project["id"] if project else "legacy"
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -202,6 +204,11 @@ def anomalies(table_name: str):
         return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
     window = _RANGES[range_str]
     project_id = _current_project_id()
+    from app.inference_adapter import bindings
+    from app.metrics_storage import active_anomaly_scores
+
+    if any(entry["source"]["table_name"] == table_name for entry in bindings(project_id)):
+        return jsonify(active_anomaly_scores(project_id, table_name, window))
     scores = get_anomaly_scores(table_name, project_id=project_id, window=window)
     if any(s["is_anomaly"] for s in scores):
         # Attach per-feature values + z-scores so the UI can show which of
@@ -226,27 +233,97 @@ def explain():
     Checks the 24 h cache before calling NIM. On NIM failure, falls back
     to a rule-based explanation (confidence=0.3).
     """
-    from .llm import explain_anomaly
+    from jsonschema import ValidationError
 
-    body = request.get_json(silent=True) or {}
-    table = body.get("table", "").strip()
-    metric = body.get("metric", "").strip()
-    ts = body.get("ts", "").strip()
+    from ml.inference_contract import FiniteValidator, canonical_ts, validator
+
+    from .inference_api import json_body
+    from .llm import _context_window, explain_anomaly
+
+    if not current_user.is_authenticated and not (
+        current_app.testing and current_app.config.get("LOGIN_DISABLED")
+    ):
+        return jsonify({"error": "authentication_required"}), 401
+    body = json_body()
+    if not isinstance(body, dict) or any(
+        not isinstance(body.get(key), str) for key in ("table", "metric", "ts")
+    ):
+        return jsonify({"error": "table, metric and ts must be strings"}), 400
+    table, metric, ts = body["table"], body["metric"], body["ts"]
+    try:
+        validator("Timestamp").validate(ts)
+        ts = canonical_ts(ts)
+    except (ValueError, ValidationError):
+        return jsonify({"error": "ts must be RFC 3339 with a timezone"}), 400
 
     if not table or not metric or not ts:
         return jsonify({"error": "table, metric and ts are required"}), 400
     if metric not in _EXPLAIN_METRICS:
         return jsonify({"error": f"metric must be one of {sorted(_EXPLAIN_METRICS)}"}), 400
 
-    cached = get_cached_explanation(table, metric, ts)
+    project_id = _current_project_id()
+    if current_user.is_authenticated and getattr(g, "current_project", None) is None:
+        return jsonify({"error": "source_forbidden"}), 403
+    cache_scope = {"project_id": project_id}
+    context = {"project_id": project_id}
+    source = body.get("source")
+    from app.source_storage import (
+        AmbiguousSourceError,
+        InvalidHistoryError,
+        ObservationNotFoundError,
+        context_source,
+    )
+
+    if source is None:
+        try:
+            source = context_source(project_id, table, ts, metric)
+        except AmbiguousSourceError:
+            return jsonify({"error": "source_required"}), 409
+        except InvalidHistoryError:
+            return jsonify({"error": "invalid_history"}), 422
+        except ObservationNotFoundError:
+            return jsonify({"error": "observation not found"}), 404
+        except ValueError:
+            return jsonify({"error": "source_forbidden"}), 403
+    if source is not None:
+        from app.inference_adapter import AdapterError
+        from app.inference_api import authorized_source
+        from app.source_storage import AmbiguousSourceError
+        from app.source_storage import metrics as source_metrics
+
+        try:
+            authorized_source(source, serving=False)
+        except AdapterError as exc:
+            return jsonify({"error": exc.code}), exc.status
+        if source["table_name"] != table:
+            return jsonify({"error": "invalid_source"}), 400
+        try:
+            window = _context_window(ts)
+            if not source_metrics(source, metric, window=window):
+                return jsonify({"error": "table not found"}), 404
+            # Both histories enter the explanation, including its fallback.
+            # Validate that context before reading the cache or calling NIM.
+            context_rows = []
+            for context_metric in ("row_count", "null_rate"):
+                context_rows.extend(source_metrics(source, context_metric, window=window))
+        except AmbiguousSourceError:
+            return jsonify({"error": "ambiguous_source"}), 409
+        except InvalidHistoryError:
+            return jsonify({"error": "invalid_history"}), 422
+        if any(
+            not FiniteValidator.TYPE_CHECKER.is_type(row["value"], "number")
+            for row in context_rows
+        ):
+            return jsonify({"error": "invalid_history"}), 422
+        cache_scope.update(connection_id=source["connection_id"], schema_name=source["schema_name"])
+        context["source"] = source
+    else:
+        if not _has_project_table_metrics(table, project_id):
+            return jsonify({"error": "table not found"}), 404
+    cached = get_cached_explanation(table, metric, ts, **cache_scope)
     if cached:
         return jsonify(cached)
-
-    project_id = _current_project_id()
-    if not _has_project_table_metrics(table, project_id):
-        return jsonify({"error": "table not found"}), 404
-
-    result = explain_anomaly(table, metric, ts, project_id=project_id)
+    result = explain_anomaly(table, metric, ts, **context)
     save_explanation(
         table=table,
         metric=metric,
@@ -254,6 +331,7 @@ def explain():
         explanation=result["explanation"],
         suggested_fix=result["suggested_fix"],
         confidence=result["confidence"],
+        **cache_scope,
     )
     return jsonify(result)
 

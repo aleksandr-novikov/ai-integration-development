@@ -10,7 +10,7 @@ global fallback. If a tenant has not configured Telegram, notifications
 for that tenant are silently dropped, never routed to the admin's chat.
 
 Public entry points called from collectors/scheduler.py:
-  notify_anomaly(project_id, bot_token, chat_id, table, ts, score, ...)
+  notify_anomaly(project_id, table, ts, score, ..., source=None)
   notify_schema_drift(project_id, bot_token, chat_id, table, events, ...)
   notify_changepoint(project_id, bot_token, chat_id, table, metric, ...)
 
@@ -20,6 +20,7 @@ metrics_storage.save_notification so the UI can show a full audit trail (#76).
 """
 
 import asyncio
+import json
 import logging
 
 from sqlalchemy import text
@@ -36,6 +37,7 @@ from telegram.error import (
 from app.feature_flags import is_enabled
 from app.llm import explain_anomaly
 from app.metrics_storage import (
+    get_connection,
     get_engine,
     is_throttled,
     save_notification,
@@ -137,6 +139,26 @@ def _project_label(project_id: str) -> str:
     return project_id
 
 
+def _connection_label(project_id: str, connection_id: str) -> str:
+    """Best-effort connection label; the id keeps equal names distinguishable."""
+    try:
+        connection = get_connection(project_id, connection_id)
+        name = str(connection["name"] or "").strip() if connection else ""
+        if name:
+            return f"{name} ({connection_id})"
+    except Exception as exc:  # pragma: no cover - label lookup is best-effort
+        logger.debug("Connection label lookup failed for %s: %s", connection_id, exc)
+    return connection_id
+
+
+def _anomaly_event_key(source: dict | None, metric: str) -> str:
+    """Full-source alerts are independent; legacy alerts keep the project/table key."""
+    if source is None:
+        return "anomaly"
+    identity = [source["connection_id"], source["schema_name"], metric]
+    return "anomaly:" + json.dumps(identity, ensure_ascii=False, separators=(",", ":"))
+
+
 def notify_anomaly(
     project_id: str,
     table: str,
@@ -147,23 +169,34 @@ def notify_anomaly(
     chat_id: str | None,
     throttle_minutes: int | None = None,
     metric: str = "row_count",
+    source: dict | None = None,
 ) -> None:
-    """Send anomaly alert. Throttled per (project, table, event_key)."""
-    event_key = "anomaly"
+    """Send anomaly alert. Throttled per (project, table, event_key).
+
+    ``source`` scopes the throttle, the text and the explanation to one full
+    source; without it the alert keeps the project-level legacy behaviour.
+    """
+    event_key = _anomaly_event_key(source, metric)
     if is_throttled(project_id, table, event_key, throttle_minutes=throttle_minutes):
         return
 
     project_label = _project_label(project_id)
+    context = {} if source is None else {"source": source}
     if is_enabled("llm_notifications"):
-        result = explain_anomaly(table, metric, ts, project_id=project_id)
+        result = explain_anomaly(table, metric, ts, project_id=project_id, **context)
         is_llm = result.get("confidence", 0) > _RULE_BASED_CONFIDENCE
         body = result.get("explanation", "Требуется ручная проверка данных.") if is_llm else "Требуется ручная проверка данных."
     else:
         body = "Требуется ручная проверка данных."
 
+    origin = "" if source is None else (
+        f"Подключение: {_connection_label(project_id, source['connection_id'])}\n"
+        f"Схема: {source['schema_name']}\n"
+    )
     text = (
         f"\U0001f6a8 DB Monitor: аномалия\n"
         f"Проект: {project_label}\n"
+        f"{origin}"
         f"Таблица: {table}\n"
         f"Метрика: {metric}\n"
         f"Время: {_fmt_ts(ts)}\n"
