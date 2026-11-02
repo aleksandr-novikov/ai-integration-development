@@ -324,8 +324,11 @@ python -m scripts.live_demo --interval 10
 Юнит-тесты (быстрые, моки/SQLite) — каждый PR:
 
 ```bash
-pytest                 # все, кроме integration (~5 c)
+pytest                 # все, кроме маркеров integration и e2e
+make test-coverage     # тот же набор с branch coverage для app/, collectors/, ml/
 ```
+
+[Стратегия и риски](docs/course/testing/STRATEGY.md) · [Матрица критериев №11 и результаты](docs/course/testing/VERIFICATION.md) · [JSON](docs/course/testing/verification.json).
 
 Интеграционные тесты (#44) поднимают реальные Postgres / MySQL / ClickHouse / TimescaleDB через [testcontainers-python](https://testcontainers-python.readthedocs.io/) — нужен запущенный Docker-демон. Покрывают:
 

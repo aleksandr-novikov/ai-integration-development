@@ -4,7 +4,7 @@ PROJECT_ID    ?= legacy
 CONNECTION_ID ?=
 DEMO_PROJECT_SLUG ?= retail-postgres
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo telegram-demo iceberg-up iceberg-down smoke-iceberg iceberg-demo demo-ids clickhouse-up clickhouse-down seed-clickhouse clickhouse-demo backup restore backup-cron-up backup-cron-down demo-prepare recover-monitor-db
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-coverage test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo telegram-demo iceberg-up iceberg-down smoke-iceberg iceberg-demo demo-ids clickhouse-up clickhouse-down seed-clickhouse clickhouse-demo backup restore backup-cron-up backup-cron-down demo-prepare recover-monitor-db
 
 build:
 	docker build -t $(IMAGE) .
@@ -52,9 +52,15 @@ test:
 		-v $(CURDIR)/tests:/app/tests \
 		app pytest $(ARGS)
 
+# Local default suite with the same coverage commands as CI, including ml/.
+test-coverage:
+	coverage run -m pytest $(ARGS)
+	coverage report -m
+	coverage xml
+
 # Integration tests (#44) — real Postgres / MySQL / ClickHouse / TimescaleDB
 # via testcontainers. Requires a running Docker daemon on the host. Run
-# locally; CI invokes the same command on push to master only.
+# locally; CI invokes the same command on PRs and push to master.
 test-integration:
 	pytest -m integration -v $(ARGS)
 
