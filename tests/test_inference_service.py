@@ -113,6 +113,76 @@ def test_actual_predict_matches_selected_artifact_without_fit(client, bundles, m
     }
 
 
+def model_query(bundles):
+    request = payload(bundles)
+    return {
+        **request["source"],
+        "model_version": request["model_version"],
+        "feature_schema_version": request["feature_schema_version"],
+    }
+
+
+def test_get_model_matches_post_without_training(client, bundles, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Model inspection must never fit")
+
+    monkeypatch.setattr("sklearn.ensemble.IsolationForest.fit", forbidden)
+    monkeypatch.setattr("sklearn.preprocessing.StandardScaler.fit", forbidden)
+    request = payload(bundles)
+    body = {key: request[key] for key in ("source", "model_version", "feature_schema_version")}
+    expected = client.post("/v1/model", json=body, headers=HEADERS)
+    actual = client.get("/v1/model", params=model_query(bundles), headers=HEADERS)
+    assert expected.status_code == actual.status_code == 200
+    assert actual.json() == expected.json()
+    operation = client.get("/openapi.json").json()["paths"]["/v1/model"]["get"]
+    assert {p["name"] for p in operation["parameters"]} == set(model_query(bundles))
+    assert "requestBody" not in operation  # Swagger/browser GET sends query parameters.
+
+
+@pytest.mark.parametrize(
+    ("change", "status", "code"),
+    [
+        ({"project_id": "foreign"}, 403, "source_forbidden"),
+        ({"connection_id": "foreign"}, 403, "source_forbidden"),
+        ({"schema_name": "other"}, 403, "source_forbidden"),
+        ({"model_version": "missing"}, 503, "model_unavailable"),
+        ({"model_version": "legacy-unknown"}, 422, "invalid_input"),
+        ({"model_version": "../model"}, 422, "invalid_input"),
+        ({"feature_schema_version": "2.0.0"}, 409, "feature_schema_mismatch"),
+        ({"feature_schema_version": "bad"}, 422, "invalid_input"),
+        ({"table_name": ""}, 422, "invalid_input"),
+        ({"extra": "ignored?"}, 422, "invalid_input"),
+    ],
+)
+def test_get_model_has_scoped_controlled_errors(client, bundles, change, status, code):
+    response = client.get("/v1/model", params={**model_query(bundles), **change}, headers=HEADERS)
+    assert response.status_code == status
+    assert response.json() == {"error": {"code": code, "message": code}}
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_get_model_rejects_missing_or_duplicate_parameters(client, bundles, duplicate):
+    params = list(model_query(bundles).items())
+    if duplicate:
+        params.append(("project_id", "foreign"))
+    else:
+        params.pop()
+    response = client.get("/v1/model", params=params, headers=HEADERS)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_input"
+
+
+def test_get_model_authentication_precedes_validation_and_loading(client, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Unauthenticated model request must not inspect the registry")
+
+    monkeypatch.setattr("inference.service.inspect_version", forbidden)
+    response = client.get("/v1/model", params={"model_version": "missing"})
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "authentication_required"
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
 @pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity", "1e400", "1" + "0" * 400])
 def test_real_http_decoder_rejects_nonfinite_numbers(client, bundles, token):
     raw = json.dumps(payload(bundles)).replace('"row_count": 110.0', f'"row_count": {token}')

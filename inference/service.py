@@ -97,7 +97,7 @@ def create_app(config=None):
             content={"error": {"code": "internal_error", "message": "Inference failed"}},
         )
 
-    async def authorized_payload(request, schema):
+    def authorized_principal(request):
         authorization = request.headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
         principal = None
@@ -107,6 +107,21 @@ def create_app(config=None):
                     principal = entry
         if principal is None:
             raise ApiError(401, "authentication_required")
+        return principal
+
+    def validated_payload(payload, principal, schema):
+        try:
+            schema.validate(payload)
+        except ValidationError:
+            raise ApiError(422, "invalid_input") from None
+        if payload["source"] not in principal["sources"]:
+            raise ApiError(403, "source_forbidden")
+        if payload["feature_schema_version"] != FEATURE_SCHEMA_VERSION:
+            raise ApiError(409, "feature_schema_mismatch")
+        return payload
+
+    async def authorized_payload(request, schema):
+        principal = authorized_principal(request)
         if (
             request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
             != "application/json"
@@ -123,15 +138,7 @@ def create_app(config=None):
             payload = strict_json(raw)
         except (ValueError, UnicodeError, RecursionError):
             raise ApiError(400, "invalid_json") from None
-        try:
-            schema.validate(payload)
-        except ValidationError:
-            raise ApiError(422, "invalid_input") from None
-        if payload["source"] not in principal["sources"]:
-            raise ApiError(403, "source_forbidden")
-        if payload["feature_schema_version"] != FEATURE_SCHEMA_VERSION:
-            raise ApiError(409, "feature_schema_mismatch")
-        return payload
+        return validated_payload(payload, principal, schema)
 
     def resolve(payload):
         try:
@@ -174,9 +181,7 @@ def create_app(config=None):
     def health():
         return {"status": "ok", "demo": config.get("demo", False)}
 
-    @app.post("/v1/model")
-    async def model(request: Request):
-        payload = await authorized_payload(request, model_validator)
+    async def model_info(payload):
         loaded = await run_in_threadpool(resolve, payload)
         manifest = loaded.manifest
         return {
@@ -186,6 +191,27 @@ def create_app(config=None):
             "demo": config.get("demo", False),
             "quality_admitted": not config.get("demo", False),
         }
+
+    @app.get("/v1/model")
+    async def get_model(request: Request):
+        principal = authorized_principal(request)
+        source_fields = ("project_id", "connection_id", "schema_name", "table_name")
+        expected = {*source_fields, "model_version", "feature_schema_version"}
+        query = request.query_params
+        # Reject ambiguous duplicate selectors and typos rather than silently
+        # choosing a model/source. GET has no JSON body or Content-Type requirement.
+        if set(query) != expected or len(query.multi_items()) != len(expected):
+            raise ApiError(422, "invalid_input")
+        payload = {
+            "source": {key: query[key] for key in source_fields},
+            "model_version": query["model_version"],
+            "feature_schema_version": query["feature_schema_version"],
+        }
+        return await model_info(validated_payload(payload, principal, model_validator))
+
+    @app.post("/v1/model")
+    async def model(request: Request):
+        return await model_info(await authorized_payload(request, model_validator))
 
     @app.post("/v1/predict")
     async def predict(request: Request):

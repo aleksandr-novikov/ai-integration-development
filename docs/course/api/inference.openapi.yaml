@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DB Monitoring — контракт внутреннего инференса
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Контракт #4 по ADR-001; реализация — inference.service (#12).
     Публикация артефакта — #5. Режим demo не означает допуска качества.
@@ -30,6 +30,51 @@ paths:
                   status: {const: ok}
                   demo: {type: boolean}
   /v1/model:
+    get:
+      operationId: inspectModelQuery
+      summary: Проверить выбранную модель через параметры запроса
+      description: |
+        Та же авторизация, привязка source и проверка артефакта, что у POST.
+        Все шесть параметров обязательны; повторные и неизвестные параметры
+        дают 422 invalid_input. JSON-тело и Content-Type не требуются.
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/Source/properties/project_id'}
+          example: project-a
+        - name: connection_id
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/Source/properties/connection_id'}
+          example: connection-a
+        - name: schema_name
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/Source/properties/schema_name'}
+          example: public
+        - name: table_name
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/Source/properties/table_name'}
+          example: orders
+        - name: model_version
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/ModelVersion'}
+        - name: feature_schema_version
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/FeatureSchemaVersion'}
+          example: 1.0.0
+      responses:
+        '200': {$ref: '#/paths/~1v1~1model/post/responses/200'}
+        '401': {description: authentication_required}
+        '403': {description: source_forbidden}
+        '409': {description: feature_schema_mismatch}
+        '422': {description: invalid_input}
+        '503': {description: model_unavailable}
+        '500': {description: internal_error}
     post:
       operationId: inspectModel
       summary: Проверить доступность выбранной модели для разрешённого источника

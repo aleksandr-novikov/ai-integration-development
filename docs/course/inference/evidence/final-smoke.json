@@ -1,0 +1,339 @@
+{
+  "recorded_at_utc": "2026-11-02T18:46:59.198244+00:00",
+  "mode": "explicit demo: archived baseline did not pass quality admission",
+  "request": {
+    "source": {
+      "project_id": "project-a",
+      "connection_id": "connection-a",
+      "schema_name": "public",
+      "table_name": "orders"
+    },
+    "observed_at": "2026-10-25T12:00:00+00:00",
+    "previous_observed_at": "2026-10-25T11:45:00+00:00",
+    "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+    "feature_schema_version": "1.0.0",
+    "features": {
+      "row_count": 110.0,
+      "null_rate": 0.03,
+      "d_row_count": 10.0,
+      "d_null_rate": 0.01
+    }
+  },
+  "response": {
+    "source": {
+      "connection_id": "connection-a",
+      "project_id": "project-a",
+      "schema_name": "public",
+      "table_name": "orders"
+    },
+    "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+    "feature_schema_version": "1.0.0",
+    "score": -0.045060413606536454,
+    "threshold": 0,
+    "is_anomaly": true,
+    "observed_at": "2026-10-25T12:00:00+00:00",
+    "demo": true,
+    "quality_admitted": false
+  },
+  "environment": {
+    "system": "Linux",
+    "machine": "x86_64",
+    "python": "3.12.3",
+    "logical_cpus": 4,
+    "ram_bytes": 16770068480,
+    "versions": {
+      "fastapi": "0.162.0",
+      "uvicorn": "0.49.0",
+      "scikit-learn": "1.6.1",
+      "skops": "0.16.0",
+      "playwright": "1.61.0"
+    }
+  },
+  "tested_code_sha256": {
+    "inference/service.py": "951c8717c9115932108b3506fd959bd575ffc4b0d700e507efc929feb723eae5",
+    "scripts/inference_smoke.py": "1acf9d20078db8685ac8cb626d25c747ab1bdd89c3fec3efc431a7285bb74385",
+    "ml/features.py": "32d2a021b1dac3219c704a1b88f620bf49a1459992479d299cd271c03f726f0b",
+    "ml/model_registry.py": "a08d15f1a0645f818fb596171bc619c153b057da691304da5d8689733e8aeda5",
+    "ml/inference_contract.py": "10b606c24a157a046575643c86254e377a728f474ee5490f898828cbcdd8d54a",
+    "docs/course/api/inference.openapi.yaml": "1e97e697a47b7d7769647c1087c8e7837d6ec0d247242fa7b3974de365b9dbde"
+  },
+  "measurement": {
+    "transport": "real localhost HTTP, one uvicorn worker; warm model cached, manifest/artifact bytes revalidated per request; no history/Flask time",
+    "cpu_ram_limit": "No CPU/RAM limits set by this script; inherited runtime limits not verified. Not the proposed 2-vCPU/4-GiB SLA profile.",
+    "concurrency": 1,
+    "request_rate": "sequential, no imposed rate",
+    "cold_request_ms": 974.903661001008,
+    "success_count": 100,
+    "failures": [],
+    "p95_ms_nearest_rank": 34.363518992904574,
+    "samples_ms": [
+      28.48293900024146,
+      33.38867399725132,
+      34.5205299963709,
+      25.94475500518456,
+      23.491311992984265,
+      26.234666001982987,
+      31.111509015318006,
+      32.63257798971608,
+      31.04517702013254,
+      31.057991000125185,
+      28.06923698517494,
+      24.408059020061046,
+      25.150514993583784,
+      24.478942999849096,
+      24.17639599298127,
+      26.850163005292416,
+      29.262035008287057,
+      31.216701987432316,
+      23.478449002141133,
+      26.27833600854501,
+      24.06341300229542,
+      29.214451991720125,
+      22.545318002812564,
+      23.54660298442468,
+      23.582178982906044,
+      24.51933699194342,
+      25.761013006558642,
+      29.840800998499617,
+      34.30331000708975,
+      30.075479997321963,
+      31.86778599047102,
+      27.832020015921444,
+      34.06096500111744,
+      26.89318300690502,
+      31.356012012111023,
+      28.986905002966523,
+      32.06567600136623,
+      26.90590498968959,
+      28.93362898612395,
+      33.66299200570211,
+      32.41879498818889,
+      31.92436700919643,
+      33.821070013800636,
+      33.21059301379137,
+      31.606837001163512,
+      26.69324300950393,
+      27.78382902033627,
+      31.01445999345742,
+      34.33648799546063,
+      24.06386300572194,
+      31.62162401713431,
+      32.33706799801439,
+      30.668564984807745,
+      25.47888201661408,
+      26.472948025912046,
+      27.247888006968424,
+      25.152090995106846,
+      25.25447600055486,
+      24.04072100762278,
+      26.404061005450785,
+      31.48174801026471,
+      27.368805021978915,
+      28.910253022331744,
+      31.66396202868782,
+      27.89864200167358,
+      36.379377997945994,
+      28.820186998927966,
+      28.354528010822833,
+      29.7420900024008,
+      31.206819985527545,
+      31.813292996957898,
+      28.894232993479818,
+      30.949448992032558,
+      29.894670995417982,
+      32.486420997884125,
+      32.64152799965814,
+      34.363518992904574,
+      32.76625100988895,
+      33.329311991110444,
+      29.33599500101991,
+      32.765882002422586,
+      28.901657002279535,
+      31.478565011639148,
+      31.556859001284465,
+      33.3297649922315,
+      35.293018008815125,
+      37.046166020445526,
+      33.13545600394718,
+      31.409599992912263,
+      30.84202599711716,
+      30.74042999651283,
+      30.862037994666025,
+      35.02463299082592,
+      33.97072001826018,
+      33.90007501002401,
+      29.390183015493676,
+      31.092293007532135,
+      26.0141949984245,
+      26.807970978552476,
+      28.68383002351038
+    ]
+  },
+  "swagger": [
+    {
+      "path": "/healthz",
+      "method": "GET",
+      "browser_version": "141.0.7390.37",
+      "request": null,
+      "status": 200,
+      "response": {
+        "status": "ok",
+        "demo": true
+      }
+    },
+    {
+      "path": "/v1/model",
+      "method": "POST",
+      "browser_version": "141.0.7390.37",
+      "request": {
+        "source": {
+          "project_id": "project-a",
+          "connection_id": "connection-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0"
+      },
+      "status": 200,
+      "response": {
+        "source": {
+          "connection_id": "connection-a",
+          "project_id": "project-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0",
+        "demo": true,
+        "quality_admitted": false
+      }
+    },
+    {
+      "path": "/v1/model",
+      "method": "GET",
+      "browser_version": "141.0.7390.37",
+      "request": {
+        "project_id": "project-a",
+        "connection_id": "connection-a",
+        "schema_name": "public",
+        "table_name": "orders",
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0"
+      },
+      "status": 200,
+      "response": {
+        "source": {
+          "connection_id": "connection-a",
+          "project_id": "project-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0",
+        "demo": true,
+        "quality_admitted": false
+      }
+    },
+    {
+      "path": "/v1/predict",
+      "method": "POST",
+      "browser_version": "141.0.7390.37",
+      "request": {
+        "source": {
+          "project_id": "project-a",
+          "connection_id": "connection-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "observed_at": "2026-10-25T12:00:00+00:00",
+        "previous_observed_at": "2026-10-25T11:45:00+00:00",
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0",
+        "features": {
+          "row_count": 110.0,
+          "null_rate": 0.03,
+          "d_row_count": 10.0,
+          "d_null_rate": 0.01
+        }
+      },
+      "status": 200,
+      "response": {
+        "source": {
+          "connection_id": "connection-a",
+          "project_id": "project-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0",
+        "score": -0.045060413606536454,
+        "threshold": 0,
+        "is_anomaly": true,
+        "observed_at": "2026-10-25T12:00:00+00:00",
+        "demo": true,
+        "quality_admitted": false
+      }
+    },
+    {
+      "path": "/v1/predict",
+      "method": "POST",
+      "browser_version": "141.0.7390.37",
+      "request": {
+        "source": {
+          "project_id": "project-a",
+          "connection_id": "connection-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "observed_at": "2026-10-25T12:00:00+00:00",
+        "previous_observed_at": "2026-10-25T11:45:00+00:00",
+        "model_version": "missing",
+        "feature_schema_version": "1.0.0",
+        "features": {
+          "row_count": 110.0,
+          "null_rate": 0.03,
+          "d_row_count": 10.0,
+          "d_null_rate": 0.01
+        }
+      },
+      "status": 503,
+      "response": {
+        "error": {
+          "code": "model_unavailable",
+          "message": "model_unavailable"
+        }
+      }
+    },
+    {
+      "path": "/v1/predict",
+      "method": "POST",
+      "browser_version": "141.0.7390.37",
+      "request": {
+        "source": {
+          "project_id": "project-a",
+          "connection_id": "connection-a",
+          "schema_name": "public",
+          "table_name": "orders"
+        },
+        "observed_at": "2026-10-25T12:00:00+00:00",
+        "previous_observed_at": "2026-10-25T11:45:00+00:00",
+        "model_version": "if-121546ae7d9b13445264fcad811c79ddb9d129c7c0dbe7d66625af1fdcec7223",
+        "feature_schema_version": "1.0.0",
+        "features": {
+          "row_count": -1,
+          "null_rate": 0.03,
+          "d_row_count": 10.0,
+          "d_null_rate": 0.01
+        }
+      },
+      "status": 422,
+      "response": {
+        "error": {
+          "code": "invalid_input",
+          "message": "invalid_input"
+        }
+      }
+    }
+  ]
+}

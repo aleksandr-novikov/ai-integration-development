@@ -32,6 +32,7 @@ with TestClient(create_app()) as client:
     assert client.get('/healthz').status_code == 200
     assert client.get('/docs').status_code == 200
     assert client.get('/openapi.json').status_code == 200
+    assert client.get('/v1/model').status_code == 401
     assert client.post('/v1/model', json={}).status_code == 401
     assert client.post('/v1/predict', json={}).status_code == 401
 print('packaged-routes-ok')

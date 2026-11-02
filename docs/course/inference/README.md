@@ -1,6 +1,6 @@
 # FastAPI-инференс — задача #12
 
-Сервис предоставляет `GET /healthz`, `POST /v1/model`, `POST /v1/predict` и
+Сервис предоставляет `GET /healthz`, `GET /v1/model`, `POST /v1/predict` и
 Swagger UI `/docs`. Он проверяет токен, полный источник и неизменяемую версию
 scaler/Isolation Forest из [реестра](../models/README.md). Обучение, чтение
 истории и запуск планировщика в HTTP-сервисе отсутствуют.
@@ -36,6 +36,27 @@ python -m uvicorn inference.service:create_app --factory --host 127.0.0.1 --port
 процесс, доступность конкретного артефакта проверяется через `/v1/model`.
 Без разрешённых токенов модель недоступна. Секреты хранятся в переменных
 окружения. За пределами локального стенда требуется TLS.
+
+`GET /v1/model` принимает шесть обязательных query-параметров: `project_id`,
+`connection_id`, `schema_name`, `table_name`, `model_version`,
+`feature_schema_version`. Повторные, неизвестные и отсутствующие параметры
+дают 422 `invalid_input`; авторизация проверяется первой. Например:
+
+```bash
+curl --get http://127.0.0.1:8000/v1/model \
+  -H "Authorization: Bearer $INFERENCE_ADAPTER_TOKEN" \
+  --data-urlencode project_id=project-a \
+  --data-urlencode connection_id=connection-a \
+  --data-urlencode schema_name=public --data-urlencode table_name=orders \
+  --data-urlencode "model_version=$MODEL_VERSION" \
+  --data-urlencode feature_schema_version=1.0.0
+```
+
+Существующий `POST /v1/model` с JSON сохранён и возвращает тот же результат.
+Swagger smoke выполняет оба варианта, успешный predict и ошибки 503/422
+кнопками `Try it out` / `Execute`. Новые результаты содержат версии браузера,
+зависимостей и SHA-256 проверенного кода. Исходные PNG остаются историческими
+примерами; [итоговый протокол](final-verification.md) связывает их с новым запуском.
 
 Реестр — доверенная директория оператора. Контрольная сумма обнаруживает
 повреждение артефакта, но не заменяет подпись поставщика. Артефакт и свидетельства

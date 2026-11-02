@@ -74,6 +74,44 @@ def test_schema_creates_hypertable(timescale_url):
     assert count == 1, "metrics must be registered as a Timescale hypertable"
 
 
+def test_existing_populated_hypertable_and_scores_survive_migration(timescale_url):
+    from app import metrics_storage as storage
+    from tests.test_inference_migration import exercise_migration
+
+    with use_metrics_db(timescale_url):
+        engine = storage._new_engine()
+        storage._engine = engine
+        storage._initialized = True
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
+            conn.execute(text("""CREATE TABLE metrics (
+                project_id TEXT NOT NULL, ts TIMESTAMPTZ NOT NULL,
+                table_name TEXT NOT NULL, metric_name TEXT NOT NULL,
+                value DOUBLE PRECISION NOT NULL, tags TEXT)"""))
+            conn.execute(text("SELECT create_hypertable('metrics', 'ts')"))
+            conn.execute(
+                text("INSERT INTO metrics VALUES ('project-a', :ts, 'orders', 'row_count', 123, NULL)"),
+                {"ts": datetime.now(UTC)},
+            )
+            chunks_before = conn.execute(text(
+                "SELECT chunk_name FROM timescaledb_information.chunks "
+                "WHERE hypertable_name = 'metrics' ORDER BY chunk_name"
+            )).scalars().all()
+        assert chunks_before
+        # Same existing-score preservation, repeated migration and versioned
+        # upsert assertions as SQLite/plain PostgreSQL, with populated chunks.
+        exercise_migration(engine, postgres=True)
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT project_id, value, connection_id, schema_name FROM metrics"
+            )).one()
+            assert tuple(row) == ("project-a", 123, "legacy-unknown", "legacy-unknown")
+            assert conn.execute(text(
+                "SELECT chunk_name FROM timescaledb_information.chunks "
+                "WHERE hypertable_name = 'metrics' ORDER BY chunk_name"
+            )).scalars().all() == chunks_before
+
+
 def test_save_and_get_metrics_roundtrip(timescale_url):
     with use_metrics_db(timescale_url):
         from app.metrics_storage import get_metrics, save_metrics

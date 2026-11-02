@@ -5,7 +5,7 @@
 | Спецификация | Маршруты | Реализация |
 |---|---|---|
 | [legacy.openapi.yaml](legacy.openapi.yaml) | GET /api/anomalies/{table_name}, GET /api/forecast/{table_name} | Существующий Flask |
-| [inference.openapi.yaml](inference.openapi.yaml) | POST /v1/predict, POST /v1/model, GET /healthz | FastAPI, `inference.service` |
+| [inference.openapi.yaml](inference.openapi.yaml) | POST /v1/predict, GET и POST /v1/model, GET /healthz | FastAPI, `inference.service` |
 
 Исходный контракт одного ML-эндпоинта для ДЗ В03 подготовлен в #4.
 В #12 добавлены работающий сервис, ещё два маршрута и проверки через Swagger UI.

@@ -5,6 +5,7 @@ The browser option needs Playwright/Chromium. No production DB or LLM is used.
 """
 
 import argparse
+import hashlib
 import importlib.metadata
 import json
 import math
@@ -53,33 +54,68 @@ def browser_checks(url, token, payload, output):
         page.goto(url + "/docs")
         page.wait_for_function("typeof ui !== 'undefined' && !!ui.preauthorizeApiKey")
         page.evaluate("token => ui.preauthorizeApiKey('AdapterBearer', token)", token)
-        for operation, path, body in [
-            ("health", "/healthz", None),
+        model = {key: payload[key] for key in ("source", "model_version", "feature_schema_version")}
+        for operation, method, path, body, status in [
+            ("health", "GET", "/healthz", None, 200),
             (
                 "inspectModel",
+                "POST",
+                "/v1/model",
+                model,
+                200,
+            ),
+            (
+                "inspectModelQuery",
+                "GET",
                 "/v1/model",
                 {
-                    key: payload[key]
-                    for key in ("source", "model_version", "feature_schema_version")
+                    **payload["source"],
+                    "model_version": payload["model_version"],
+                    "feature_schema_version": payload["feature_schema_version"],
                 },
+                200,
             ),
-            ("predictAnomaly", "/v1/predict", payload),
+            ("predictAnomaly", "POST", "/v1/predict", payload, 200),
+            (
+                "predictAnomaly",
+                "POST",
+                "/v1/predict",
+                {**payload, "model_version": "missing"},
+                503,
+            ),
+            (
+                "predictAnomaly",
+                "POST",
+                "/v1/predict",
+                {**payload, "features": {**payload["features"], "row_count": -1}},
+                422,
+            ),
         ]:
             block = page.locator(f"#operations-default-{operation}")
-            block.locator(".opblock-summary-control").click()
-            block.get_by_role("button", name="Try it out", exact=True).click()
+            if "is-open" not in block.get_attribute("class").split():
+                block.locator(".opblock-summary-control").click()
+            try_button = block.get_by_role("button", name="Try it out", exact=True)
+            if try_button.is_visible():
+                try_button.click()
             if body is not None:
-                block.locator("textarea").fill(json.dumps(body, ensure_ascii=False, indent=2))
+                if method == "GET":
+                    for key, value in body.items():
+                        block.locator(f'tr[data-param-name="{key}"] input').fill(value)
+                else:
+                    block.locator("textarea").fill(json.dumps(body, ensure_ascii=False, indent=2))
             with page.expect_response(
-                lambda response, path=path: response.url == url + path
-                and response.request.method in ("GET", "POST")
+                lambda response, path=path, method=method: response.url.split("?", 1)[0]
+                == url + path
+                and response.request.method == method
             ) as actual:
                 block.get_by_role("button", name="Execute", exact=True).click()
             response = actual.value
-            assert response.status == 200, response.text()
+            assert response.status == status, response.text()
             results.append(
                 {
                     "path": path,
+                    "method": method,
+                    "browser_version": browser.version,
                     "request": body,
                     "status": response.status,
                     "response": response.json(),
@@ -92,7 +128,7 @@ def browser_checks(url, token, payload, output):
                 "token => document.querySelectorAll('.curl-command').forEach(el => el.textContent = el.textContent.replaceAll(token, '<temporary-token>'))",
                 token,
             )
-            block.screenshot(path=str(output / f"swagger-{operation}.png"))
+            block.screenshot(path=str(output / f"swagger-{operation}-{status}.png"))
         browser.close()
     return results
 
@@ -191,11 +227,23 @@ def run(output, swagger=False):
                             "versions": {
                                 name: importlib.metadata.version(name)
                                 for name in ("fastapi", "uvicorn", "scikit-learn", "skops")
+                                + (("playwright",) if swagger else ())
                             },
+                        },
+                        "tested_code_sha256": {
+                            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                            for name in (
+                                "inference/service.py",
+                                "scripts/inference_smoke.py",
+                                "ml/features.py",
+                                "ml/model_registry.py",
+                                "ml/inference_contract.py",
+                                "docs/course/api/inference.openapi.yaml",
+                            )
                         },
                         "measurement": {
                             "transport": "real localhost HTTP, one uvicorn worker; warm model cached, manifest/artifact bytes revalidated per request; no history/Flask time",
-                            "cpu_ram_limit": "unrestricted local host; not the proposed 2-vCPU/4-GiB SLA profile",
+                            "cpu_ram_limit": "No CPU/RAM limits set by this script; inherited runtime limits not verified. Not the proposed 2-vCPU/4-GiB SLA profile.",
                             "concurrency": 1,
                             "request_rate": "sequential, no imposed rate",
                             "cold_request_ms": cold_ms,
