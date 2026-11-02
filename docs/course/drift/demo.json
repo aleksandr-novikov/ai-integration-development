@@ -1,0 +1,119 @@
+{
+  "kind": "synthetic-policy-demonstration",
+  "seed": 42,
+  "scope": "Independent synthetic marginals; not measured production quality or concept drift",
+  "baseline_points": 1344,
+  "current_window_points": 288,
+  "stable": {
+    "status": "no_signal",
+    "signalled_features": [],
+    "features": {
+      "row_count": {
+        "ks_d": 0.0498511904762,
+        "ks_p_approx": 0.615274448464,
+        "psi": 0.0403842433408,
+        "signal": false
+      },
+      "null_rate": {
+        "ks_d": 0.0446428571429,
+        "ks_p_approx": 0.777065238038,
+        "psi": 0.0297494665081,
+        "signal": false
+      },
+      "d_row_count": {
+        "ks_d": 0.0404265873016,
+        "ks_p_approx": 0.921187130211,
+        "psi": 0.0428202726358,
+        "signal": false
+      },
+      "d_null_rate": {
+        "ks_d": 0.0538194444444,
+        "ks_p_approx": 0.506195876138,
+        "psi": 0.0365087980877,
+        "signal": false
+      }
+    }
+  },
+  "shifted_nonoverlapping_windows": [
+    {
+      "status": "signal",
+      "signalled_features": [
+        "row_count"
+      ],
+      "features": {
+        "row_count": {
+          "ks_d": 1.0,
+          "ks_p_approx": 1.95958979067e-206,
+          "psi": 8.27453033766,
+          "signal": true
+        },
+        "null_rate": {
+          "ks_d": 0.0540674603175,
+          "ks_p_approx": 0.499811548482,
+          "psi": 0.0548491807815,
+          "signal": false
+        },
+        "d_row_count": {
+          "ks_d": 0.0582837301587,
+          "ks_p_approx": 0.399226427496,
+          "psi": 0.0202658690538,
+          "signal": false
+        },
+        "d_null_rate": {
+          "ks_d": 0.0610119047619,
+          "ks_p_approx": 0.342114732867,
+          "psi": 0.0396274670386,
+          "signal": false
+        }
+      }
+    },
+    {
+      "status": "signal",
+      "signalled_features": [
+        "row_count"
+      ],
+      "features": {
+        "row_count": {
+          "ks_d": 1.0,
+          "ks_p_approx": 1.95958979067e-206,
+          "psi": 8.27453033766,
+          "signal": true
+        },
+        "null_rate": {
+          "ks_d": 0.0364583333333,
+          "ks_p_approx": 1.0,
+          "psi": 0.0527803247736,
+          "signal": false
+        },
+        "d_row_count": {
+          "ks_d": 0.0458829365079,
+          "ks_p_approx": 0.73676858093,
+          "psi": 0.0202008194863,
+          "signal": false
+        },
+        "d_null_rate": {
+          "ks_d": 0.046875,
+          "ks_p_approx": 0.705299861453,
+          "psi": 0.0276207220789,
+          "signal": false
+        }
+      }
+    }
+  ],
+  "persistent_features": [
+    "row_count"
+  ],
+  "below_minimum": {
+    "status": "insufficient_data",
+    "signalled_features": [],
+    "features": {}
+  },
+  "below_coverage": {
+    "status": "insufficient_data",
+    "signalled_features": [],
+    "features": {}
+  },
+  "decision": "investigate_and_request_verified_labels; no automatic retraining",
+  "model_trained": false,
+  "active_model_changed": false
+}
