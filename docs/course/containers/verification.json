@@ -96,5 +96,38 @@
     "tests/integration/test_inference_image.py": "b8b6a1312a9a2afd74c75d7006733cd0ecf6562c87821d7f7213099ec86013f2",
     "docs/course/inference/README.md": "ab0e694a70bfabb86ec40fad1d0cfb130a51fa7ed3ba813695e8a77e602e466c",
     "docs/course/containers/README.md": "9fee5fb36fca4e225fbf157ab40f8a4da60da317d674c6792ffae1b770100fcb"
+  },
+  "clean_checkout_offline_check": {
+    "checked_commit": "fb795a38003c5acd3dbc457b6d6c3e5521744c06",
+    "initial_git_status": "clean",
+    "no_preexisting_env": true,
+    "tests": 15,
+    "unit_command": "python3 -m unittest discover -s tests -p test_container_setup.py -v",
+    "unit_result": "PASS",
+    "static_result": {
+      "ast_files": {
+        "app": 26,
+        "collectors": 5,
+        "inference": 2,
+        "ml": 9,
+        "scripts": 29,
+        "tests": 92
+      },
+      "requirements": [
+        "requirements-course.txt",
+        "requirements-dev.txt",
+        "requirements-inference.txt",
+        "requirements.txt"
+      ],
+      "compose_services": 8,
+      "markdown_links": 22,
+      "bash_blocks": 8,
+      "embedded_python_blocks": 4
+    },
+    "source_hashes_match": true,
+    "default_init_result": "PASS; .env mode 0600 and APP_VERSION matches checked commit",
+    "repeat_init_result": "refused with exit 2; existing .env unchanged",
+    "final_git_status": "clean; generated env ignored",
+    "scope": "Offline checks only; full Compose startup not executed"
   }
 }
