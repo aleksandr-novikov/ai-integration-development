@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -40,11 +41,121 @@ def environment():
                 if line and not line.startswith("#"))
 
 
-def redact(message, values):
-    for key in ("SECRET_KEY", "FERNET_KEY", "INFERENCE_ADAPTER_TOKEN"):
-        if secret := values.get(key):
-            message = message.replace(secret, "<redacted>")
-    return re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/@]+:[^\s@]+@", r"\1<redacted>@", message)
+def matches(pattern):
+    return lambda value: type(value) is str and re.fullmatch(pattern, value) is not None
+
+
+def choices(*values):
+    return lambda value: type(value) is str and value in values
+
+
+def number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def count(value):
+    return type(value) is int and value >= 0
+
+
+def boolean(value):
+    return type(value) is bool
+
+
+STAGES = (
+    "clean checkout", "checkout SHA", "configuration", "Docker version", "Compose version", "validate configuration",
+    "inspect image", "private files absent in image", "database readiness", "seed and warmup",
+    "Flask and FastAPI healthchecks", "app container ID", "app image ID", "inference container ID",
+    "inference image ID", "normal", "incident", "stop scheduler before persistence check", "snapshot",
+    "restart databases", "restart database readiness", "recreate database readiness",
+    "recreate application and inference", "after-recreate", "list isolated volumes",
+    "remove only runner test resources", "verification", "readiness", "dashboard",
+    "dashboard after recreate", "restart persistence", "recreate persistence",
+)
+ERROR_TYPES = ("command_failed", "timeout", "assertion_failed", "os_error", "invalid_data", "unexpected_error")
+SHA = matches(r"[a-f0-9]{40}")
+IMAGE_ID = matches(r"sha256:[a-f0-9]{64}")
+VERSION = matches(r"v?\d+\.\d+\.\d+")
+STAMP = matches(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)")
+BOOL = boolean
+SOURCE = {"project_id": matches(r"[a-f0-9]{32}"), "connection_id": matches(r"[a-f0-9]{32}"),
+          "schema_name": choices("public"), "table_name": choices("events")}
+BINDING = {"source": SOURCE, "model_version": matches(r"if-[a-f0-9]{64}"), "feature_schema_version": VERSION}
+DEMO_FLAGS = {"demo": lambda value: value is True, "quality_admitted": lambda value: value is False}
+OBSERVATION = {**BINDING, **DEMO_FLAGS, "ts": STAMP, "score": number, "is_anomaly": BOOL,
+               "features": {key: number for key in ("row_count", "null_rate", "d_row_count", "d_null_rate")}}
+TABLE_DIGEST = {"rows": count, "digest": matches(r"[a-f0-9]{32}")}
+SNAPSHOT = {"source": SOURCE, "fernet_decryption": BOOL,
+            "target": {name: TABLE_DIGEST for name in ("users", "products", "orders", "events")},
+            "store": {name: TABLE_DIGEST for name in ("metrics", "anomaly_scores", "projects", "connections")},
+            "artifacts": (r"models/registry/versions/if-[a-f0-9]{64}/pipeline\.skops", matches(r"[a-f0-9]{64}"))}
+DASHBOARD = {"status": count, "csrf_login": BOOL, "source": SOURCE, "version": BINDING["model_version"],
+             "observed_at": STAMP, "score_visible": BOOL, "scope": choices("HTTP HTML/API, not browser rendering")}
+REPORT_SCHEMA = {
+    "technical_pass": BOOL, "manual_browser_and_second_participant": choices("NOT VERIFIED"),
+    "checkout_sha": SHA, "pr_head_sha": SHA,
+    "image_reused_from": choices("test_inference_image nocache=True"), "image_id": IMAGE_ID,
+    "docker": matches(r"\d+\.\d+\.\d+ / \d+\.\d+\.\d+"), "compose": VERSION,
+    "serving_image_ids": {name: IMAGE_ID for name in ("app", "inference")},
+    "steps": [{"step": choices(*STAGES), "exit_code": lambda value: value is None or type(value) is int,
+               "seconds": number, "error_type": choices(*ERROR_TYPES)}],
+    "failure": {"stage": choices(*STAGES), "exit_code": lambda value: value is None or type(value) is int,
+                "error_type": choices(*ERROR_TYPES)},
+    "prepared": {"binding": BINDING, **DEMO_FLAGS, "baseline_fpr": number, "fernet_key_shared": BOOL,
+                 "warmup": {"retail-postgres": {key: count for key in (
+                     "metrics", "anomaly_scores", "changepoints", "drift_reports", "notifications", "forecast_models")}}},
+    "readiness": {"target_db": choices("ok"), "monitor_db": choices("ok"),
+                  "monitor_backend": choices("postgresql"), "unauthorized_model_status": count,
+                  "model": {**BINDING, **DEMO_FLAGS}},
+    "normal": [OBSERVATION], "incident": [OBSERVATION], "after_recreate": [OBSERVATION],
+    "model_scenario": {"normal_points": count, "false_alarms": count, "incident_points": count,
+                       "incident_detected": BOOL, "passed": BOOL},
+    "dashboard": DASHBOARD, "dashboard_after_recreate": DASHBOARD,
+    "restart_persistence": SNAPSHOT, "recreate_persistence": SNAPSHOT, "cleanup": choices("PASS"),
+}
+OMIT = object()
+
+
+def public_report(value, schema=REPORT_SCHEMA):
+    """Project only declared fields and constrained scalar values; never stringify input."""
+    if isinstance(schema, dict):
+        if type(value) is not dict:
+            return OMIT
+        return {key: result for key, child in schema.items() if key in value
+                if (result := public_report(value[key], child)) is not OMIT}
+    if isinstance(schema, list):
+        if type(value) is not list:
+            return OMIT
+        return [result for item in value if (result := public_report(item, schema[0])) is not OMIT]
+    if isinstance(schema, tuple):
+        if type(value) is not dict:
+            return OMIT
+        pattern, child = schema
+        return {key: result for key, item in value.items() if matches(pattern)(key)
+                if (result := public_report(item, child)) is not OMIT}
+    return value if schema(value) else OMIT
+
+
+def save_report(value):
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
+    REPORT.write_text(json.dumps(public_report(value), ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+
+
+class CommandFailure(RuntimeError):
+    def __init__(self, stage, exit_code, error_type):
+        super().__init__("CI command failed")
+        self.stage, self.exit_code, self.error_type = stage, exit_code, error_type
+
+
+def failure_fields(error, stage):
+    if isinstance(error, CommandFailure):
+        return {"stage": error.stage, "exit_code": error.exit_code, "error_type": error.error_type}
+    category = "unexpected_error"
+    for kind, name in ((AssertionError, "assertion_failed"), (subprocess.TimeoutExpired, "timeout"),
+                       (OSError, "os_error"), (ValueError, "invalid_data")):
+        if isinstance(error, kind):
+            category = name
+            break
+    return {"stage": stage, "exit_code": None, "error_type": category}
 
 
 def runner_only():
@@ -184,15 +295,23 @@ class ComposeRun:
         runner_only()
         self.values = environment() if (ROOT / ".env").exists() else {}
         self.report = {"technical_pass": False, "steps": [], "manual_browser_and_second_participant": "NOT VERIFIED"}
+        self.stage = "verification"
 
     def command(self, label, args, timeout=180):
+        self.stage = label
         started = time.monotonic()
-        process = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
-        self.report["steps"].append({"step": label, "command": " ".join(args),
-                                     "exit_code": process.returncode, "seconds": round(time.monotonic() - started, 2)})
-        save(REPORT, self.report)
+        try:
+            process = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.report["steps"].append({"step": label, "exit_code": None, "error_type": "timeout",
+                                         "seconds": round(time.monotonic() - started, 2)})
+            save_report(self.report)
+            raise CommandFailure(label, None, "timeout") from None
+        self.report["steps"].append({"step": label, "exit_code": process.returncode,
+                                     "seconds": round(time.monotonic() - started, 2)})
+        save_report(self.report)
         if process.returncode:
-            raise RuntimeError(label + ": " + redact(process.stderr + process.stdout, self.values)[-5000:])
+            raise CommandFailure(label, process.returncode, "command_failed")
         return process.stdout
 
     def compose(self, label, *args, timeout=180):
@@ -235,6 +354,7 @@ class ComposeRun:
         assert not self.command("clean checkout", ["git", "status", "--porcelain"]).strip()
         sha = self.command("checkout SHA", ["git", "rev-parse", "HEAD"]).strip()
         assert sha == os.environ["COMPOSE_SMOKE_SHA"]
+        self.stage = "configuration"
         create_environment(ROOT / ".env", version=sha, uid=os.getuid(), gid=os.getgid())
         self.values = environment()
         image = os.environ["COMPOSE_SMOKE_IMAGE"]
@@ -246,7 +366,8 @@ class ComposeRun:
                     (("app", "2g"), ("inference", "1g"), ("postgres", "512m"), ("timescaledb", "768m"))}
         services["app"]["environment"] = {"COMPOSE_DEMO_TEST": "1"}
         save(OVERRIDE, {"services": services, "networks": {"default": {"internal": True}}})
-        self.report.update(checkout_sha=sha, image_reused_from="test_inference_image nocache=True",
+        self.report.update(checkout_sha=sha, pr_head_sha=os.environ.get("COMPOSE_SMOKE_PR_HEAD"),
+                           image_reused_from="test_inference_image nocache=True",
                            docker=self.command("Docker version", ["docker", "version", "--format", "{{.Client.Version}} / {{.Server.Version}}"]).strip(),
                            compose=self.command("Compose version", ["docker", "compose", "version", "--short"]).strip())
         self.compose("validate configuration", "config", "--quiet")
@@ -271,6 +392,7 @@ class ComposeRun:
         import httpx
 
         binding = self.report["prepared"]["binding"]
+        self.stage = "readiness"
         with httpx.Client(timeout=30, trust_env=False) as client:
             health = client.get("http://127.0.0.1:" + self.values["PORT"] + "/healthz")
             assert health.status_code == 200
@@ -288,8 +410,9 @@ class ComposeRun:
         for phase in ("normal", "incident"):
             self.probe(phase)
             self.report[phase] = read(DEMO / (phase + ".json"))
-            save(REPORT, self.report)
+            save_report(self.report)
         self.report["model_scenario"] = outcome(self.report["normal"], self.report["incident"])
+        self.stage = "dashboard"
         self.report["dashboard"] = self.dashboard(self.report["incident"])
         self.compose("stop scheduler before persistence check", "stop", "app", "inference")
         self.probe("snapshot")
@@ -303,11 +426,13 @@ class ComposeRun:
             self.compose(action + " database readiness", *args, "postgres", "timescaledb")
             self.probe("snapshot")
             after = read(DEMO / "snapshot.json")
+            self.stage = action + " persistence"
             assert before == after, action + " changed test data/artifact"
             self.report[action + "_persistence"] = after
         self.compose("recreate application and inference", "up", "-d", "--no-build", "--force-recreate", "--wait", "--wait-timeout", "150", "app", "inference")
         self.probe("after-recreate")
         self.report["after_recreate"] = read(DEMO / "after-recreate.json")
+        self.stage = "dashboard after recreate"
         self.report["dashboard_after_recreate"] = self.dashboard(self.report["after_recreate"])
         self.report["technical_pass"] = True
 
@@ -328,9 +453,9 @@ def cleanup():
     assert set(volumes.split()) <= {state["project"] + "_pg_data", state["project"] + "_timescale_data"}
     try:
         run.compose("remove only runner test resources", "down", "--volumes", "--remove-orphans", timeout=120)
-        report["cleanup"] = "PASS; only the recorded runner project and its test volumes"
+        report["cleanup"] = "PASS"
     finally:
-        save(REPORT, report)
+        save_report(report)
 
 
 def main():
@@ -348,7 +473,7 @@ def main():
     elif mode == "cleanup":
         cleanup()
     elif mode == "check-outcome":
-        result = read(REPORT)
+        result = public_report(read(REPORT))
         print(json.dumps(result.get("model_scenario", {})))
         if not result.get("technical_pass") or not result.get("model_scenario", {}).get("passed"):
             raise SystemExit("Actual demo model did not confirm both normal and incident states; no calibration performed")
@@ -357,18 +482,11 @@ def main():
         try:
             run.run()
         except Exception as exc:
-            run.report["failure"] = {"type": type(exc).__name__, "message": redact(str(exc), run.values)}
-            if STATE.exists():
-                try:
-                    logs = run.compose("failure diagnostics", "logs", "--no-color", "--tail", "60",
-                                       "app", "inference", "postgres", "timescaledb", timeout=30)
-                    run.report["diagnostic_tail"] = redact(logs, run.values)[-8000:]
-                except Exception:
-                    run.report["diagnostic_tail"] = "unavailable; inspect recorded step exit codes"
+            run.report["failure"] = failure_fields(exc, run.stage)
             raise SystemExit("Compose verification failed; see sanitized ci-report.json") from None
         finally:
-            save(REPORT, run.report)
-        print("Compose technical checks PASS; actual model result:", run.report["model_scenario"])
+            save_report(run.report)
+        print("Compose technical checks PASS; actual model result:", public_report(run.report)["model_scenario"])
 
 
 if __name__ == "__main__":

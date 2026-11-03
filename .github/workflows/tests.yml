@@ -59,11 +59,13 @@ jobs:
       contents: read
     env:
       COMPOSE_SMOKE_IMAGE: course13-ci:${{ github.run_id }}-${{ github.run_attempt }}
-      COMPOSE_SMOKE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      COMPOSE_SMOKE_SHA: ${{ github.sha }}
+      COMPOSE_SMOKE_PR_HEAD: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -98,7 +100,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compose-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          name: compose-evidence-${{ github.sha }}
           path: artifacts/compose-demo/ci-report.json
           if-no-files-found: warn
           retention-days: 14
