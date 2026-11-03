@@ -1,13 +1,13 @@
 services:
   postgres:
     image: postgres:18
-    container_name: db-monitoring-pg
+    container_name: ${COMPOSE_PROJECT_NAME:-db-monitoring}-pg
     environment:
       POSTGRES_DB: monitor
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: dev
     ports:
-      - "5432:5432"
+      - "${BIND_ADDRESS:-0.0.0.0}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql
     healthcheck:
@@ -27,13 +27,13 @@ services:
   # Порт 5433 наружу — чтобы не пересекаться с monitored Postgres на 5432.
   timescaledb:
     image: timescale/timescaledb:latest-pg16
-    container_name: db-monitoring-timescale
+    container_name: ${COMPOSE_PROJECT_NAME:-db-monitoring}-timescale
     environment:
       POSTGRES_DB: metrics
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: dev
     ports:
-      - "5433:5432"
+      - "${BIND_ADDRESS:-0.0.0.0}:${TIMESCALE_PORT:-5433}:5432"
     volumes:
       - timescale_data:/var/lib/postgresql/data
     healthcheck:
@@ -44,9 +44,13 @@ services:
     restart: unless-stopped
 
   app:
-    build: .
-    image: db-monitoring
-    container_name: db-monitoring-app
+    build: &app-build
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    image: ${APP_IMAGE:-db-monitoring}
+    container_name: ${COMPOSE_PROJECT_NAME:-db-monitoring}-app
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
     env_file: .env
     environment:
       # Перекрываем DSN из .env (внутри compose БД доступны по имени сервиса,
@@ -55,8 +59,12 @@ services:
       # на демо (#212/#213).
       DATABASE_URL: postgresql://postgres:dev@postgres:5432/monitor
       MONITOR_DB_URL: postgresql://postgres:dev@timescaledb:5432/metrics
+      FERNET_KEY: ${FERNET_KEY:?Set the persistent FERNET_KEY in .env; see docs/course/containers/README.md}
+      HOST: 0.0.0.0
+      PORT: "5001"
+      FLASK_DEBUG: "0"
     ports:
-      - "${PORT:-5001}:5001"
+      - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-5001}:5001"
     volumes:
       # ВАЖНО: ./monitor.db НЕ маунтим. Раньше маунт превращал host-овый
       # SQLite файл в shared mutable state между app-процессами; под write-
@@ -70,6 +78,29 @@ services:
         condition: service_healthy
       timescaledb:
         condition: service_healthy
+    restart: unless-stopped
+
+  # Optional standalone #12 service; same image, no Flask/scheduler or training.
+  # Config and trusted registry artifacts are prepared explicitly, never baked in.
+  inference:
+    profiles: ["inference"]
+    build: *app-build
+    image: ${APP_IMAGE:-db-monitoring}
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    environment:
+      INFERENCE_CONFIG: ${INFERENCE_CONFIG:-/app/models/demo/service.json}
+      INFERENCE_ADAPTER_TOKEN: ${INFERENCE_ADAPTER_TOKEN:-}
+    command: ["python", "-m", "uvicorn", "inference.service:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${INFERENCE_PORT:-8000}:8000"
+    volumes:
+      - ./models:/app/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
 
   # ── Apache Iceberg smoke-test backend (#128) ─────────────────────────

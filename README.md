@@ -43,6 +43,8 @@ pinned: false
 
 [OpenAPI-контракты Flask и внутреннего инференса](docs/course/api/README.md) · [FastAPI, Swagger UI, версии результатов и запуск](docs/course/inference/README.md).
 
+[Изолированный Compose-стенд: чистая сборка, seed, demo-инференс и перезапуск](docs/course/containers/README.md) · [Фактические проверки и ограничения](docs/course/containers/verification.md).
+
 Подготовка датасета для экспериментов: `python -m scripts.generate_ml_dataset --output data/course`.
 
 [Эксперименты MLflow: запуск, перенос результатов](docs/course/experiments/README.md) · [Таблица и выводы первой серии](docs/course/experiments/RESULTS.md): 9/9 инцидентов на test, FPR 13,27% — цель ≤10% пока не достигнута.
@@ -119,7 +121,8 @@ pip install -r requirements.txt
 # 5. Настроить переменные окружения
 cp .env.example .env
 # По умолчанию .env.example указывает на локальный Postgres (см. ниже).
-# Для подключения к Supabase раскомментируй соответствующую строку и заполни пароль (у тимлида).
+# Supabase необязательна; для неё нужны собственные реквизиты.
+# Для контейнерного стенда используй подготовку .env по инструкции «Запуск в Docker».
 ```
 
 Основной стек: Flask, SQLAlchemy, APScheduler, Plotly, Prophet, ruptures, joblib.
@@ -129,6 +132,12 @@ cp .env.example .env
 ## Локальный Postgres (рекомендуется для разработки)
 
 Чтобы не упираться в сетевую латентность Supabase free tier, для разработки поднимается локальный Postgres 18 через Docker Compose:
+
+Compose требует постоянный `FERNET_KEY` в `.env`, в том числе при запуске
+отдельной БД. Для новой копии подготовь файл через
+[инициализацию стенда](docs/course/containers/README.md) вместо `cp .env.example`;
+для существующей сохрани прежний ключ. В подготовленном стенде host-порт БД —
+15432; без переопределений — 5432.
 
 ```bash
 make db-up      # поднимает postgres:18 на localhost:5432 (db=monitor, user=postgres, pass=dev)
@@ -169,7 +178,7 @@ DATABASE_URL=postgresql://postgres:dev@localhost:5432/monitor
 ### Через Makefile (рекомендуется)
 
 ```bash
-make server     # docker compose up -d --build app  (поднимает postgres + Flask на :5001)
+make server     # foreground: Compose поднимает PostgreSQL + TimescaleDB + Flask
 make reset-db   # TRUNCATE + reseed target Postgres → live collector → change-point sweep
 ```
 
@@ -478,27 +487,34 @@ make iceberg-down     # остановить
 
 ## Запуск в Docker
 
-```bash
-make build           # docker build -t db-monitoring .
-make server          # build + run на :5001 с volume-маунтами monitor.db и models/
-```
-
-Или вручную:
+Для новой учебной копии используй [полный маршрут #13](docs/course/containers/README.md):
+проверка свободных имён/портов, создание конфигурации, сборка, PostgreSQL,
+TimescaleDB, Flask и опциональный профиль FastAPI. Первые команды из корня
+**чистого checkout без существующего `.env`**, после проверки изоляции:
 
 ```bash
-docker build -t db-monitoring .
-docker run --rm -it --init -p 5001:5001 \
-    --env-file .env \
-    -v "$PWD/monitor.db:/app/monitor.db" \
-    -v "$PWD/models:/app/models" \
-    db-monitoring
+python3 -m scripts.init_compose_demo
+docker compose config --quiet
+docker compose build --no-cache app
+docker compose up -d --no-build --wait --wait-timeout 120 app
+curl --fail http://127.0.0.1:15001/healthz
 ```
 
-Дашборд: [http://localhost:5001](http://localhost:5001).
+Подготовленный стенд публикует Flask на `127.0.0.1:15001`; внутри образа —
+`0.0.0.0:5001`. Обычный Compose без настройки порта по-прежнему использует 5001.
+`pg_data` и `timescale_data` сохраняют БД; `models/` хранит артефакты вне образа.
+SQLite-файл в контейнер приложения не монтируется. Host DSN и внутренние DSN
+Compose различаются; `make demo-prepare` / `make live-demo` теперь запускают
+существующие скрипты в контейнере приложения с его настройками.
 
-В контейнере приложение слушает `0.0.0.0:5001`. Все настройки задаются через `.env` или флаги `-e`. Volume-маунты сохраняют `monitor.db` и обученные joblib-модели между перезапусками.
+Сохранить `.env` и его FERNET_KEY на повторный запуск. Для существующего стенда
+использовать прежний ключ из `.env`/`.env.local`, иначе сохранённые подключения
+не расшифруются. `docker compose stop` завершает работу без удаления volumes;
+команды сброса БД не входят в обычный демонстрационный маршрут.
 
-> Образ — `python:3.12-slim`. Внутри тянется Prophet (cmdstanpy + numpy + pandas + matplotlib) и ruptures (scipy) — первая сборка медленная, последующие используют кэш слоёв.
+Образ — `python:3.12-slim`, включает MLflow, Prophet и вложенные requirements.
+Реальная сборка текущих изменений и независимый Compose-прогон пока не
+подтверждены: см. [протокол](docs/course/containers/verification.md).
 
 ### Подключение к Supabase из Docker
 

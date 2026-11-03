@@ -1,0 +1,100 @@
+{
+  "recorded_at_utc": "2026-11-03T02:59:42.134424+00:00",
+  "base_master_sha": "46712fb54b77bc45e9f89693214e5a467d264270",
+  "scope": "Offline checks of the working tree; no Docker/Compose runtime or independent reproduction claimed.",
+  "environment": {
+    "os": "Linux",
+    "python": "3.12.3",
+    "PyYAML": "6.0.1",
+    "cryptography": "41.0.7",
+    "commands": {
+      "docker": false,
+      "make": false
+    },
+    "modules": {
+      "pip": false,
+      "pytest": false,
+      "ruff": false,
+      "docker": false
+    }
+  },
+  "checks": [
+    {
+      "command": "python3 -m unittest discover -s tests -p test_container_setup.py -v",
+      "status": "PASS",
+      "tests": 15,
+      "exit_code": 0,
+      "output": "test_container_ports_do_not_follow_host_port (test_container_setup.ComposeConfigurationTests.test_container_ports_do_not_follow_host_port) ... ok\ntest_databases_are_distinct_and_waited_for (test_container_setup.ComposeConfigurationTests.test_databases_are_distinct_and_waited_for) ... ok\ntest_demo_make_targets_run_inside_compose (test_container_setup.ComposeConfigurationTests.test_demo_make_targets_run_inside_compose) ... ok\ntest_inference_uses_same_build_and_readonly_registry (test_container_setup.ComposeConfigurationTests.test_inference_uses_same_build_and_readonly_registry) ... ok\ntest_isolated_names_ports_and_users_are_configurable (test_container_setup.ComposeConfigurationTests.test_isolated_names_ports_and_users_are_configurable) ... ok\ntest_persistence_and_legacy_profiles_are_preserved (test_container_setup.ComposeConfigurationTests.test_persistence_and_legacy_profiles_are_preserved) ... ok\ntest_cli_does_not_print_keys_and_rejects_second_run (test_container_setup.DemoEnvironmentTests.test_cli_does_not_print_keys_and_rejects_second_run) ... ok\ntest_existing_environment_is_never_replaced (test_container_setup.DemoEnvironmentTests.test_existing_environment_is_never_replaced) ... ok\ntest_generated_fernet_key_decrypts_in_a_different_process (test_container_setup.DemoEnvironmentTests.test_generated_fernet_key_decrypts_in_a_different_process) ... ok\ntest_host_dsns_match_published_ports_and_use_metrics_postgres (test_container_setup.DemoEnvironmentTests.test_host_dsns_match_published_ports_and_use_metrics_postgres) ... ok\ntest_invalid_ports_root_or_sha_leave_no_file (test_container_setup.DemoEnvironmentTests.test_invalid_ports_root_or_sha_leave_no_file) ... ok\ntest_new_checkouts_get_different_keys_names_and_images (test_container_setup.DemoEnvironmentTests.test_new_checkouts_get_different_keys_names_and_images) ... ok\ntest_no_paid_or_external_notifications_by_default (test_container_setup.DemoEnvironmentTests.test_no_paid_or_external_notifications_by_default) ... ok\ntest_private_persistent_keys_and_unprivileged_identity (test_container_setup.DemoEnvironmentTests.test_private_persistent_keys_and_unprivileged_identity) ... ok\ntest_symlink_is_not_followed (test_container_setup.DemoEnvironmentTests.test_symlink_is_not_followed) ... ok\n\n----------------------------------------------------------------------\nRan 15 tests in 0.549s\n\nOK\n"
+    },
+    {
+      "command": "python3 - <<'PY'\nimport ast, json, re, subprocess\nfrom pathlib import Path\nimport yaml\ncounts = {}\nfor directory in (\"app\", \"collectors\", \"inference\", \"ml\", \"scripts\", \"tests\"):\n    paths = list(Path(directory).rglob(\"*.py\"))\n    for path in paths:\n        ast.parse(path.read_text(), filename=str(path))\n    counts[directory] = len(paths)\nseen = set()\ndef visit(path):\n    if path in seen:\n        return\n    assert path.is_file(), str(path)\n    seen.add(path)\n    for line in path.read_text().splitlines():\n        if line.startswith(\"-r \"):\n            visit(path.parent / line[3:].strip())\nvisit(Path(\"requirements.txt\"))\nvisit(Path(\"requirements-dev.txt\"))\nassert \"COPY --chown=user requirements*.txt ./\" in Path(\"Dockerfile\").read_text()\ncompose = yaml.safe_load(Path(\"docker-compose.yml\").read_text())\nassert len(compose[\"services\"]) == 8\nlinks = 0\nfor name in (\"README.md\", \"docs/course/inference/README.md\", \"docs/course/containers/README.md\", \"docs/course/containers/verification.md\"):\n    path = Path(name)\n    for link in re.findall(r\"\\]\\(([^\\s)]+)\\)\", path.read_text()):\n        if \"://\" in link or link.startswith(\"#\"):\n            continue\n        if name == \"README.md\" and not link.startswith(\"docs/course/containers/\"):\n            continue\n        assert (path.parent / link.split(\"#\")[0]).exists(), (name, link)\n        links += 1\nblocks = re.findall(r\"```bash\\n(.*?)```\", Path(\"docs/course/containers/README.md\").read_text(), re.S)\nembedded = 0\nfor block in blocks:\n    result = subprocess.run([\"bash\", \"-n\"], input=block, text=True, capture_output=True)\n    assert result.returncode == 0, result.stderr\n    for source in re.findall(r\"<<'PY'\\n(.*?)\\nPY(?:\\n|$)\", block, re.S):\n        ast.parse(source)\n        embedded += 1\nprint(json.dumps(dict(ast_files=counts, requirements=sorted(map(str, seen)), compose_services=len(compose[\"services\"]), markdown_links=links, bash_blocks=len(blocks), embedded_python_blocks=embedded)))\nPY",
+      "status": "PASS",
+      "exit_code": 0,
+      "result": {
+        "ast_files": {
+          "app": 26,
+          "collectors": 5,
+          "inference": 2,
+          "ml": 9,
+          "scripts": 29,
+          "tests": 92
+        },
+        "requirements": [
+          "requirements-course.txt",
+          "requirements-dev.txt",
+          "requirements-inference.txt",
+          "requirements.txt"
+        ],
+        "compose_services": 8,
+        "markdown_links": 22,
+        "bash_blocks": 8,
+        "embedded_python_blocks": 4
+      }
+    },
+    {
+      "command": "git diff --check",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "command": "git check-ignore .env.local .env.production artifacts/compose-demo/normal.log",
+      "status": "PASS",
+      "scope": "ignore rules, not a scan of an actual built image"
+    }
+  ],
+  "initial_test_failure": {
+    "passed": 14,
+    "errors": 1,
+    "reason": "GNU Make not installed; routing check changed to static recipe inspection rather than execution."
+  },
+  "not_run": [
+    "docker compose config --quiet",
+    "docker compose build --no-cache app",
+    "Docker image inspection",
+    "Full clean-checkout Compose startup",
+    "Seed/warmup/normal/incident/dashboard flow",
+    "Volume persistence after restart/recreate",
+    "pytest packaging/regression/integration/E2E",
+    "ruff check .",
+    "Independent second-participant reproduction"
+  ],
+  "source_sha256": {
+    "Dockerfile": "3f3d73cb0fc5eec6e107b84b19f1d0942e66cb161b3b7c44701a56dcdb687a7d",
+    ".dockerignore": "60c5519cd1df7c15b43470bf79057b28d96c0ca54e5f49b49668669a86576c29",
+    ".env.example": "893b89d3a2af85295a33d51efdbb4911209123013aa9a8333ecaad9273bb9ae9",
+    ".gitignore": "4075659aaa00677577551f32815492918a1b5f5b63697c2da7c9986720cd832e",
+    "docker-compose.yml": "afd4bef114e3a6bd673e35692f0aa60e2bb9d5ff012ba860df11af84cab36cd9",
+    "Makefile": "b44b15ad091bfb15053699ef8fb2b10e32e4d8550ee064271c98f63d9a5d0d5a",
+    "README.md": "8acd20929523955924ce4535dd11f7f1663d7ea1a379b809a999612a40f7e83b",
+    "requirements.txt": "392233ce4b60c851b212ea51c97b7d049facbf378d272c034f4fafaf513f7127",
+    "requirements-dev.txt": "534abe221e3136fc0950b60fba205cbc1f7555005d7a5be1f03de9a3b4b86462",
+    "requirements-course.txt": "94f9deaa787ef17c847072e3e227f8ba2604e279481197b8b69b2026a56d2517",
+    "requirements-inference.txt": "9fd0d95f04a2a3b7eabcb4bc54124ade2e56a444b0b3cca9b97b35ee15b84cf8",
+    "scripts/init_compose_demo.py": "846d0691221cd3793a084b25f64a9ca2d878ccc97712cdcaeecd67d7bc78b3bf",
+    "tests/test_container_setup.py": "64a24da5efd74628a75ffef9d269049a8be1be5f3a8513767fa5ffa7002a884c",
+    "tests/test_inference_packaging.py": "0852a4d050f6587055a4fd2f989ab713d8e96c439095ab76c2b795b533472cee",
+    "tests/integration/test_inference_image.py": "b8b6a1312a9a2afd74c75d7006733cd0ecf6562c87821d7f7213099ec86013f2",
+    "docs/course/inference/README.md": "ab0e694a70bfabb86ec40fad1d0cfb130a51fa7ed3ba813695e8a77e602e466c",
+    "docs/course/containers/README.md": "9fee5fb36fca4e225fbf157ab40f8a4da60da317d674c6792ffae1b770100fcb"
+  }
+}

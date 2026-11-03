@@ -14,7 +14,7 @@ def test_runtime_image_contains_contract_and_serves_routes():
     tag = f"db-monitoring-contract-test:{uuid.uuid4().hex}"
     client = docker.from_env(timeout=1200)
     try:
-        client.images.build(path=str(root), tag=tag, rm=True)
+        client.images.build(path=str(root), tag=tag, rm=True, nocache=True)
         output = client.containers.run(
             tag,
             [
@@ -27,6 +27,10 @@ from inference.service import create_app
 from ml.inference_contract import CONTRACT_PATH, validator
 assert CONTRACT_PATH.is_file()
 assert not Path('/app/docs/course/experiments').exists()
+assert not Path('/app/.env').exists()
+assert not Path('/app/.env.local').exists()
+assert not Path('/app/backups').exists()
+assert not Path('/app/models/registry').exists()
 validator('PredictionRequest')
 with TestClient(create_app()) as client:
     assert client.get('/healthz').status_code == 200

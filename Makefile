@@ -28,8 +28,9 @@ warmup-ml:
 db-up:
 	docker compose up -d postgres
 	@echo "Waiting for Postgres to become healthy..."
-	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-pg 2>/dev/null)" = "healthy" ]; do sleep 1; done
-	@echo "Postgres ready on localhost:5432 (db=monitor user=postgres pass=dev)"
+	@i=0; until docker compose exec -T postgres pg_isready -U postgres -d monitor >/dev/null 2>&1; do \
+		i=$$((i+1)); [ $$i -ge 60 ] && echo "ERROR: Postgres not ready in 60s" && exit 1; sleep 1; done
+	@docker compose port postgres 5432
 
 db-down:
 	docker compose down
@@ -71,7 +72,7 @@ test-integration:
 # For project-scoped demo: make live-demo PROJECT_ID=<id> CONNECTION_ID=<id>
 # Get IDs via: make demo-ids
 live-demo:
-	python -m scripts.live_demo \
+	docker compose run --rm --no-deps app python -m scripts.live_demo \
 		--project-id $(PROJECT_ID) \
 		$(if $(CONNECTION_ID),--connection-id $(CONNECTION_ID),) \
 		$(ARGS)
@@ -83,7 +84,7 @@ telegram-demo: ## Demo 3.2 Telegram path (#182): make telegram-demo ARGS=all
 # Один проход: seed_demo_workspace → seed_metrics_db → warmup_ml → verify.
 # По умолчанию готовит retail-postgres; --slug для других.
 demo-prepare:
-	python -m scripts.demo_prepare $(ARGS)
+	docker compose run --rm --no-deps app python -m scripts.demo_prepare $(ARGS)
 
 # Print PROJECT_ID and CONNECTION_ID for the demo account (demo@dbmonitor.app).
 demo-ids:
@@ -113,8 +114,9 @@ test-e2e:
 timescale-up:
 	docker compose up -d timescaledb
 	@echo "Waiting for TimescaleDB to become healthy..."
-	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-timescale 2>/dev/null)" = "healthy" ]; do sleep 1; done
-	@echo "TimescaleDB ready on localhost:5433 (db=metrics user=postgres pass=dev)"
+	@i=0; until docker compose exec -T timescaledb pg_isready -U postgres -d metrics >/dev/null 2>&1; do \
+		i=$$((i+1)); [ $$i -ge 60 ] && echo "ERROR: TimescaleDB not ready in 60s" && exit 1; sleep 1; done
+	@docker compose port timescaledb 5432
 
 timescale-down:
 	docker compose stop timescaledb
