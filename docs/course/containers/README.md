@@ -12,6 +12,36 @@ Flask с scheduler. Профиль `inference` добавляет отдельн
 нужен для сборки; Supabase, платный LLM и Telegram для демонстрации не нужны.
 Фактические результаты и непроверенные шаги: [протокол](verification.md).
 
+### Автоматическая проверка на GitHub runner
+
+В `tests.yml` после integration выполняется отдельный Compose-этап на том же
+Linux runner: он использует образ, уже собранный image-тестом с `nocache=True`.
+Вторая сборка и перенос многогигабайтного образа между jobs не нужны.
+Checkout этого job — точный HEAD PR, его SHA и image ID записываются в отчёт.
+
+`python -m scripts.verify_compose_demo run` создаёт новую конфигурацию и
+изолированный проект; проверяет Compose config, БД, Flask/FastAPI, доступ
+к артефакту, seed/warmup, реальные нормальные/инцидентные оценки, HTTP HTML/API
+дашборда с обычным входом и CSRF, restart/recreate с полными хэшами тестовых
+строк и артефакта. Стартовая инъекция и модель используют существующие скрипты;
+выбор данных, порогов и версии ради успешного исхода не выполняется.
+
+Отдельная команда `check-outcome` завершает job ошибкой при ложной тревоге,
+необнаружении или отсутствии результатов, даже если инфраструктура исправна.
+Отчёт различает `technical_pass` и `model_scenario.passed`. В нём сохраняются
+source, timestamp, версии, четыре признака, score/is_anomaly, `demo=true`,
+`quality_admitted=false`. Это не независимое воспроизведение человеком и не
+проверка отрисовки графиков браузером; снимок UI остаётся ручным этапом ниже.
+
+Job ограничен 30 минутами, контейнеры — CPU/RAM, Docker network — `internal`.
+NIM/Telegram не настроены. В `always()` удаляются только контейнеры и два
+тестовых volume записанного проекта этого workflow-run. Такое удаление
+разрешено только для одноразового runner, не для существующих данных.
+Host-команды `run`/`cleanup` отказывают за пределами Linux GitHub Actions.
+Публикуется только обезличенный `ci-report.json`, без `.env`, сырых логов,
+токенов или полного Compose config. Артефакт `compose-evidence-<SHA>` хранится
+14 дней; перед истечением срока сохранить проверенный JSON как свидетельство.
+
 ## 1. Чистая копия и конфигурация
 
 Использовать отдельный каталог и новый Compose project, а не рабочие данные:
@@ -210,14 +240,14 @@ docker compose run --rm --no-deps app python -m scripts.live_demo \
 docker compose exec -T postgres psql -U postgres -d monitor -c \
   'SELECT count(*) AS rows, count(*) FILTER (WHERE ip_address IS NULL) AS null_ips FROM events;'
 docker compose exec -T timescaledb psql -U postgres -d metrics -c \
-  "SELECT ts,score,is_anomaly,model_version,feature_schema_version,demo FROM anomaly_scores WHERE project_id='$PROJECT_ID' AND connection_id='$CONNECTION_ID' AND table_name='events' ORDER BY ts DESC LIMIT 5;"
+  "SELECT ts,score,is_anomaly,model_version,feature_schema_version,is_demo AS demo FROM anomaly_scores WHERE project_id='$PROJECT_ID' AND connection_id='$CONNECTION_ID' AND table_name='events' ORDER BY ts DESC LIMIT 5;"
 docker compose run --rm --no-deps app python -m scripts.live_demo \
   --project-id "$PROJECT_ID" --connection-id "$CONNECTION_ID" \
   --ticks 3 --interval 5 --incident-at 2 2>&1 | tee artifacts/compose-demo/incident.log
 docker compose exec -T postgres psql -U postgres -d monitor -c \
   'SELECT count(*) AS rows, count(*) FILTER (WHERE ip_address IS NULL) AS null_ips FROM events;'
 docker compose exec -T timescaledb psql -U postgres -d metrics -c \
-  "SELECT ts,score,is_anomaly,model_version,feature_schema_version,demo FROM anomaly_scores WHERE project_id='$PROJECT_ID' AND connection_id='$CONNECTION_ID' AND table_name='events' ORDER BY ts DESC LIMIT 10;"
+  "SELECT ts,score,is_anomaly,model_version,feature_schema_version,is_demo AS demo FROM anomaly_scores WHERE project_id='$PROJECT_ID' AND connection_id='$CONNECTION_ID' AND table_name='events' ORDER BY ts DESC LIMIT 10;"
 ```
 
 `pipefail` не позволяет `tee` скрывать ошибки команды.
