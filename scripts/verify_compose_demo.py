@@ -474,6 +474,16 @@ def observe(phase):
     # live_demo inserts each batch, then collects and scores that tick once.
     batches = ([_BASE_ROWS_PER_TICK * _INCIDENT_ROW_MULTIPLIER] if phase == "incident"
                else [_BASE_ROWS_PER_TICK] * 3)
+    if phase == "normal":
+        # Seeded history is stored without this connection's source key, so the
+        # first tick would have no predecessor and no score. One existing
+        # collector pass over the unchanged table provides that baseline; a
+        # single observation has no pair, so it is never scored itself.
+        from collectors.per_project import collect_for_connection
+
+        collect_for_connection(source["project_id"], source["connection_id"])
+        baseline = [{row["ts"] for row in source_storage.metrics(source, name)} for name in ("row_count", "null_rate")]
+        assert len(baseline[0]) == 1 and baseline[0] == baseline[1], "baseline observation missing"
     before = table_count(source)
     # Same canonical form as stored score timestamps, so string order is time order.
     started = datetime.now(UTC).isoformat(timespec="microseconds")
@@ -509,8 +519,10 @@ def observe(phase):
     aligned = sorted({r["ts"] for r in rc} & {r["ts"] for r in nr})
     with httpx.Client(timeout=20, trust_env=False) as client:
         for row in new:
+            position = aligned.index(row["ts"])
+            assert position > 0, "observation without a preceding collection"
             payload = {**binding, "features": row["features"], "observed_at": row["ts"],
-                       "previous_observed_at": aligned[aligned.index(row["ts"]) - 1]}
+                       "previous_observed_at": aligned[position - 1]}
             response = client.post(config["url"] + "/v1/predict", json=payload,
                                    headers={"Authorization": "Bearer " + os.environ["INFERENCE_ADAPTER_TOKEN"]})
             assert response.status_code == 200

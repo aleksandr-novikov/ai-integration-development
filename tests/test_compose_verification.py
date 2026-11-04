@@ -872,6 +872,7 @@ class ObservationPhaseTests(unittest.TestCase):
     start = "2026-11-04T10:00:10.000000+00:00"
     end = "2026-11-04T10:00:20.000000+00:00"
     previous = "2026-11-04T10:00:05.000000+00:00"
+    baseline = "2026-11-04T10:00:07.000000+00:00"
     ticks = ("2026-11-04T10:00:11.000000+00:00", "2026-11-04T10:00:13.000000+00:00",
              "2026-11-04T10:00:15.000000+00:00")
     late = "2026-11-04T10:00:25.000000+00:00"
@@ -886,14 +887,38 @@ class ObservationPhaseTests(unittest.TestCase):
         verify.save(demo / "prepared.json", {"binding": BINDING})
         verify.save(demo / "adapter.json", {"url": "http://inference:8000"})
 
-    def observe(self, phase, values, score_ts, counts):
-        """Run the real observe() with storage, subprocess, clock and HTTP replaced."""
-        stamps = (self.previous, *self.ticks[:len(values)], self.late)
-        row_counts = [{"ts": ts, "value": value} for ts, value in zip(stamps, (2000, *values, 9999), strict=True)]
-        null_rates = [{"ts": ts, "value": 0.02} for ts in stamps]
-        scores = {ts: {**BINDING, "ts": ts, "score": -0.1 - index / 10, "is_anomaly": index % 2 == 0, "demo": True}
-                  for index, ts in enumerate((self.previous, *score_ts, self.late))}
-        storage = SimpleNamespace(metrics=lambda source, name: row_counts if name == "row_count" else null_rates,
+    def observe(self, phase, values, score_ts, counts, *, baseline=True, prior=None, served=None):
+        """Run the real observe() with storage, collector, subprocess, clock and HTTP replaced.
+
+        Seeded history is never part of the source; a normal run starts with no
+        source metrics unless ``prior`` is set, and the incident follows a scored tick.
+        """
+        prior = phase != "normal" if prior is None else prior
+        order = (self.previous, *self.ticks, self.late)
+        row_counts, null_rates = [], []
+        self.collected = []
+
+        def collect(timestamp, value):
+            row_counts.append({"ts": timestamp, "value": value})
+            null_rates.append({"ts": timestamp, "value": 0.02})
+
+        if prior:
+            collect(self.previous, 2000)
+
+        def baseline_collection(project_id, connection_id):
+            self.collected.append((project_id, connection_id, len(run.call_args_list)))
+            if baseline:
+                collect(self.baseline, 2000)
+
+        def live_demo(command, **kwargs):
+            for timestamp, value in zip((*self.ticks[:len(values)], self.late), (*values, 9999), strict=True):
+                collect(timestamp, value)
+
+        scored = ((self.previous,) if prior else ()) + (*score_ts, self.late)
+        scores = {ts: {**BINDING, "ts": ts, "score": -0.1 - order.index(ts) / 10,
+                       "is_anomaly": order.index(ts) % 2 == 0, "demo": True} for ts in scored}
+        storage = SimpleNamespace(metrics=lambda source, name: sorted(row_counts if name == "row_count" else null_rates,
+                                                                       key=lambda row: row["ts"]),
                                   scores=lambda source, version, schema: [scores[ts] for ts in sorted(scores)])
 
         class Response:
@@ -917,20 +942,24 @@ class ObservationPhaseTests(unittest.TestCase):
 
             def post(self, url, json, headers):
                 assert url == "http://inference:8000/v1/predict"
-                row = scores[json["observed_at"]]
+                row = (served or scores)[json["observed_at"]]
+                self.previous_seen.append(json["previous_observed_at"])
                 return Response({**BINDING, "demo": True, "quality_admitted": False, "observed_at": row["ts"],
                                  "score": row["score"], "is_anomaly": row["is_anomaly"]})
 
+        Client.previous_seen = self.previous_seen = []
         clock = Mock()
         clock.now.side_effect = [SimpleNamespace(isoformat=lambda timespec: self.start),
                                  SimpleNamespace(isoformat=lambda timespec: self.end)]
         modules = {"app": SimpleNamespace(source_storage=storage),
                    "httpx": SimpleNamespace(Client=Client),
+                   "collectors.per_project": SimpleNamespace(collect_for_connection=baseline_collection),
                    "scripts.live_demo": SimpleNamespace(_BASE_ROWS_PER_TICK=200, _INCIDENT_ROW_MULTIPLIER=10)}
         with patch.dict(sys.modules, modules), patch.object(verify, "container_state", return_value=SOURCE), \
                 patch.object(verify, "table_count", side_effect=counts), patch.object(verify, "datetime", clock), \
-                patch.object(verify.subprocess, "run") as run, \
+                patch.object(verify.subprocess, "run", side_effect=live_demo) as run, \
                 patch.dict(os.environ, {"INFERENCE_ADAPTER_TOKEN": "fixture-adapter-token"}):
+            self.run = run  # inspected after a refused phase
             verify.observe(phase)
         self.command = run.call_args.args[0]
         return verify.read(verify.DEMO / (phase + ".json"))
@@ -942,6 +971,34 @@ class ObservationPhaseTests(unittest.TestCase):
         self.assertEqual([row["features"]["row_count"] for row in rows], [2200, 2400, 2600])
         self.assertEqual(self.command[self.command.index("--ticks") + 1], "3")
         self.assertNotIn("--incident-at", self.command)
+
+    def test_normal_collects_one_unscored_baseline_of_the_source_before_inserting(self):
+        rows = self.observe("normal", (2200, 2400, 2600), self.ticks, (2000, 2600))
+        self.assertEqual(self.collected, [(SOURCE["project_id"], SOURCE["connection_id"], 0)])
+        self.assertNotIn(self.baseline, [row["ts"] for row in rows])
+        self.assertEqual(self.previous_seen, [self.baseline, *self.ticks[:2]])
+        self.assertEqual([row["features"]["d_row_count"] for row in rows], [200, 200, 200])
+
+    def test_normal_stops_before_inserting_without_a_baseline_or_with_foreign_history(self):
+        for name, options in {"baseline_missing": {"baseline": False},
+                              "unexpected_history": {"prior": True}}.items():
+            with self.subTest(name):
+                with self.assertRaises(AssertionError):
+                    self.observe("normal", (2200, 2400, 2600), self.ticks, (2000, 2600), **options)
+                self.assertEqual(self.run.call_count, 0)
+                self.assertFalse((verify.DEMO / "normal.json").is_file())
+
+    def test_incident_follows_the_last_tick_without_a_new_baseline(self):
+        rows = self.observe("incident", (4600,), self.ticks[:1], (2600, 4600))
+        self.assertEqual(self.collected, [])
+        self.assertEqual(self.previous_seen, [self.previous])
+        self.assertNotIn(self.previous, [row["ts"] for row in rows])
+
+    def test_service_result_must_match_each_stored_score(self):
+        served = {ts: {**BINDING, "ts": ts, "score": -0.5, "is_anomaly": False} for ts in self.ticks}
+        with self.assertRaises(AssertionError):
+            self.observe("normal", (2200, 2400, 2600), self.ticks, (2000, 2600), served=served)
+        self.assertFalse((verify.DEMO / "normal.json").is_file())
 
     def test_lagging_estimate_is_kept_beside_the_exact_count_without_changing_phase_or_result(self):
         rows = self.observe("normal", (2000, 2200, 2400), self.ticks, (2000, 2600))
