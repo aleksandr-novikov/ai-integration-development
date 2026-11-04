@@ -24,14 +24,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from scripts.demo_model import CONFIGS, REGIME
+
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "artifacts/compose-demo/ci-report.json"
 STATE = ROOT / ".git/compose-ci-state.json"
 OVERRIDE = ROOT / ".git/compose-ci.json"
 DEMO = ROOT / "models/demo"
+# Offline result of the same generator/model, committed with the protocol.
+DEMO_MODEL_EVIDENCE = ROOT / "docs/course/containers/demo-model/evaluation.json"
 PREPARE_DIAGNOSTICS = ROOT / "models/.compose-diagnostics/prepare.json"
 PREPARE_STAGES = ("guard", "imports", "target_seed", "demo_prepare", "summary_check",
-                  "source_check", "registry_export", "config_write")
+                  "source_check", "demo_model", "config_write")
 PREPARE_ERRORS = ("import_error", "permission_denied", "file_missing", "database_error",
                   "assertion_failed", "os_error", "invalid_data", "interrupted",
                   "process_exit", "unexpected_error")
@@ -85,7 +89,7 @@ def boolean(value):
 STAGES = (
     "clean checkout", "checkout SHA", "configuration", "Docker version", "Compose version", "validate configuration",
     "inspect image", "private files absent in image", "database readiness", "seed and warmup",
-    "prepare diagnostics preflight",
+    "prepare diagnostics preflight", "demo model reproducibility",
     "Flask and FastAPI healthchecks", "app container ID", "app image ID", "inference container ID",
     "inference image ID", "normal", "incident", "stop scheduler before persistence check", "snapshot",
     "restart databases", "restart database readiness", "recreate database readiness",
@@ -103,6 +107,23 @@ SOURCE = {"project_id": matches(r"[a-f0-9]{32}"), "connection_id": matches(r"[a-
           "schema_name": choices("public"), "table_name": choices("events")}
 BINDING = {"source": SOURCE, "model_version": matches(r"if-[a-f0-9]{64}"), "feature_schema_version": VERSION}
 DEMO_FLAGS = {"demo": lambda value: value is True, "quality_admitted": lambda value: value is False}
+HEX64 = matches(r"[a-f0-9]{64}")
+QUALITY = {**{key: count for key in ("normal_points", "false_alarms", "incidents", "detected", "aftermath_points",
+                                     "aftermath_alarms", "scenarios", "scenarios_passed")},
+           **{key: number for key in ("precision", "recall", "f1", "false_positive_rate", "event_recall",
+                                      "abrupt_median_delay_ticks", "scenario_pass_rate")},
+           "scenario_pass_rate_wilson95": [number]}
+DEMO_MODEL = {
+    "regime": choices(REGIME), "configuration": choices(*CONFIGS), "seed": count,
+    "parameters": {"contamination": number, "n_estimators": count, "max_samples": count},
+    "model_version": BINDING["model_version"], "training_vectors": count, "test_vectors": count,
+    **{key: HEX64 for key in ("artifact_sha256", "train_data_sha256", "test_data_sha256", "scores_sha256")},
+    "test": {"metrics": QUALITY, "families": {name: QUALITY for name in ("general", "compose", "readme")},
+             "targets": {name: BOOL for name in ("event_recall", "false_positive_rate", "abrupt_median_delay_ticks")},
+             "targets_passed": BOOL},
+    "environment": {name: VERSION for name in ("python", "scikit-learn", "numpy", "skops")}, **DEMO_FLAGS,
+}
+REPRODUCED = ("train_data_sha256", "test_data_sha256", "scores_sha256", "test")
 OBSERVATION = {**BINDING, **DEMO_FLAGS, "ts": STAMP, "score": number, "is_anomaly": BOOL, "exact_row_count": count,
                "features": {key: number for key in ("row_count", "null_rate", "d_row_count", "d_null_rate")}}
 TABLE_DIGEST = {"rows": count, "digest": matches(r"[a-f0-9]{32}")}
@@ -122,13 +143,14 @@ REPORT_SCHEMA = {
                "seconds": number, "error_type": choices(*ERROR_TYPES)}],
     "failure": {"stage": choices(*STAGES), "exit_code": lambda value: value is None or type(value) is int,
                 "error_type": choices(*ERROR_TYPES)},
-    "prepared": {"binding": BINDING, **DEMO_FLAGS, "baseline_fpr": number, "fernet_key_shared": BOOL,
+    "prepared": {"binding": BINDING, **DEMO_FLAGS, "demo_model": DEMO_MODEL, "fernet_key_shared": BOOL,
                  "warmup": {"retail-postgres": {key: count for key in (
                      "metrics", "anomaly_scores", "changepoints", "drift_reports", "notifications", "forecast_models")}}},
     "readiness": {"target_db": choices("ok"), "monitor_db": choices("ok"),
                   "monitor_backend": choices("postgresql"), "unauthorized_model_status": count,
                   "model": {**BINDING, **DEMO_FLAGS}},
     "normal": [OBSERVATION], "incident": [OBSERVATION], "after_recreate": [OBSERVATION],
+    "demo_model_reproduced": {key: BOOL for key in REPRODUCED},
     "model_scenario": {"normal_points": count, "false_alarms": count, "incident_points": count,
                        "incident_detected": BOOL, "passed": BOOL},
     "dashboard": DASHBOARD, "dashboard_after_recreate": DASHBOARD,
@@ -423,8 +445,7 @@ def prepare():
             raise RuntimeError("preparation is restricted to the isolated Compose test")
     with progress.step("imports"):
         from app import metrics_storage as ms
-        from ml.model_registry import stage_export
-        from scripts import demo_prepare, seed_target_db
+        from scripts import demo_model, demo_prepare, seed_target_db
 
     with progress.step("target_seed"):
         seed_target_db.main(n_users=500, n_products=50, n_orders=1000, n_events=2000)
@@ -441,16 +462,29 @@ def prepare():
                 if project["id"] != source["project_id"]:
                     for connection in ms.list_connections_for_project(project["id"]):
                         ms.set_connection_active(project["id"], connection["id"], False)
-    with progress.step("registry_export"):
-        manifest = stage_export(ROOT / "models/registry", Path("/tmp/mlflow-export.zip"), source=source)
+    with progress.step("demo_model"):
+        # Separate demo-only model of the stand's own regime; #9 stays archived.
+        sha = os.environ.get("APP_VERSION", "")
+        assert re.fullmatch(r"[a-f0-9]{40}", sha), "image must carry the checked commit SHA"
+        manifest, evaluation = demo_model.train_and_evaluate(ROOT / "models/registry", source, sha)
     with progress.step("config_write"):
+        save(DEMO / "evaluation.json", evaluation)
         binding = {"source": source, **{k: manifest[k] for k in ("model_version", "feature_schema_version")}}
         save(DEMO / "service.json", {"registry_path": "models/registry", "demo": True,
              "principals": [{"token_env": "INFERENCE_ADAPTER_TOKEN", "sources": [source]}]})
         save(DEMO / "adapter.json", {"url": "http://inference:8000", "demo": True,
              "token_env": "INFERENCE_ADAPTER_TOKEN", "bindings": [binding]})
         save(DEMO / "prepared.json", {"binding": binding, "warmup": summary, "demo": True,
-             "quality_admitted": False, "baseline_fpr": 0.1327, "fernet_key_shared": True})
+             "quality_admitted": False, "fernet_key_shared": True,
+             "demo_model": {key: value for key, value in evaluation.items() if key in DEMO_MODEL}})
+
+
+def reproduced(actual):
+    """Same seeds and code must give the committed data; scores also need equal libraries."""
+    expected = read(DEMO_MODEL_EVIDENCE)
+    result = {key: actual[key] == expected[key] for key in REPRODUCED}
+    assert result["train_data_sha256"] and result["test_data_sha256"], "demo data differ from the recorded generator"
+    return result
 
 
 def table_count(source):
@@ -658,9 +692,9 @@ class ComposeRun:
                          "app", "python", "-m", "scripts.verify_compose_demo", "inside-prepare-preflight")
             value = read_checkpoints()
             assert value["mount_verified"] and not value["events"]
-            self.compose("seed and warmup", "run", "--rm", "-T", "--no-deps", "-v",
-                         str(ROOT / "docs/course/experiments/mlflow-export.zip") + ":/tmp/mlflow-export.zip:ro",
-                         "app", "python", "-m", "scripts.verify_compose_demo", "inside-prepare", timeout=600)
+            # Seed, warmup, demo-model training and its one-time test evaluation.
+            self.compose("seed and warmup", "run", "--rm", "-T", "--no-deps",
+                         "app", "python", "-m", "scripts.verify_compose_demo", "inside-prepare", timeout=900)
             diagnostics = collect_prepare_diagnostics()
             assert diagnostics["last_successful_stage"] == "config_write"
             assert diagnostics["failed_stage"] is None and diagnostics["active_stage"] is None
@@ -702,6 +736,9 @@ class ComposeRun:
         self.compose("database readiness", "up", "-d", "--no-build", "--wait", "--wait-timeout", "120", "postgres", "timescaledb")
         self.prepare_in_container()
         self.report["prepared"] = read(DEMO / "prepared.json")
+        self.stage = "demo model reproducibility"
+        self.report["demo_model_reproduced"] = reproduced(self.report["prepared"]["demo_model"])
+        save_report(self.report)
         self.compose("Flask and FastAPI healthchecks", "up", "-d", "--no-build", "--wait", "--wait-timeout", "150", "inference", "app")
         self.report["serving_image_ids"] = {}
         for service in ("app", "inference"):
@@ -788,9 +825,13 @@ def main():
         cleanup()
     elif mode == "check-outcome":
         result = public_report(read(REPORT))
+        quality = result.get("prepared", {}).get("demo_model", {}).get("test", {})
         print(json.dumps(result.get("model_scenario", {})))
+        print(json.dumps({"demo_model_test_targets_passed": quality.get("targets_passed")}))
         if not result.get("technical_pass") or not result.get("model_scenario", {}).get("passed"):
             raise SystemExit("Actual demo model did not confirm both normal and incident states; no calibration performed")
+        if quality.get("targets_passed") is not True:
+            raise SystemExit("Demo model did not meet the declared targets on its independent test split")
     else:
         run = ComposeRun()
         try:

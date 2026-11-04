@@ -1,0 +1,188 @@
+{
+  "regime": "compose-demo-normal/1",
+  "configuration": "contamination_005",
+  "parameters": {
+    "contamination": 0.005,
+    "n_estimators": 100,
+    "max_samples": 256
+  },
+  "seed": 42,
+  "model_version": "if-f525900b63aa588aaff359ef1943109851ad59d992bb319d17af95927950decd",
+  "artifact_sha256": "49673b5fe0d63abd1527b53af6eddd9eeef53497dfa1473e37b9619fc74b357a",
+  "train_data_sha256": "f6708b40721fc7640f927e03e3215cea7ad26596e197d9c07ec88e169230700a",
+  "test_data_sha256": "694cfbd0a11e928927d12186508bd3e6425c18bd7832eb33550c817d3e35ff13",
+  "scores_sha256": "0667678455b8a048ebf09c3066527f6910dde700344741a9861bb57225038346",
+  "training_vectors": 4000,
+  "test_vectors": 4400,
+  "test": {
+    "metrics": {
+      "normal_points": 3133,
+      "false_alarms": 52,
+      "incidents": 440,
+      "detected": 440,
+      "precision": 0.894309,
+      "recall": 1.0,
+      "f1": 0.944206,
+      "false_positive_rate": 0.016598,
+      "event_recall": 1.0,
+      "abrupt_median_delay_ticks": 0.0,
+      "aftermath_points": 827,
+      "aftermath_alarms": 324
+    },
+    "families": {
+      "compose": {
+        "normal_points": 600,
+        "false_alarms": 11,
+        "incidents": 200,
+        "detected": 200,
+        "precision": 0.947867,
+        "recall": 1.0,
+        "f1": 0.973236,
+        "false_positive_rate": 0.018333,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 0,
+        "aftermath_alarms": 0,
+        "scenarios": 200,
+        "scenarios_passed": 190,
+        "scenario_pass_rate": 0.95,
+        "scenario_pass_rate_wilson95": [
+          0.9104,
+          0.9726
+        ]
+      },
+      "general": {
+        "normal_points": 1733,
+        "false_alarms": 29,
+        "incidents": 40,
+        "detected": 40,
+        "precision": 0.57971,
+        "recall": 1.0,
+        "f1": 0.733945,
+        "false_positive_rate": 0.016734,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 627,
+        "aftermath_alarms": 210
+      },
+      "readme": {
+        "normal_points": 800,
+        "false_alarms": 12,
+        "incidents": 200,
+        "detected": 200,
+        "precision": 0.943396,
+        "recall": 1.0,
+        "f1": 0.970874,
+        "false_positive_rate": 0.015,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 200,
+        "aftermath_alarms": 114,
+        "scenarios": 200,
+        "scenarios_passed": 190,
+        "scenario_pass_rate": 0.95,
+        "scenario_pass_rate_wilson95": [
+          0.9104,
+          0.9726
+        ]
+      }
+    },
+    "targets": {
+      "event_recall": true,
+      "false_positive_rate": true,
+      "abrupt_median_delay_ticks": true
+    },
+    "targets_passed": true
+  },
+  "environment": {
+    "python": "3.12.3",
+    "scikit-learn": "1.6.1",
+    "numpy": "2.5.4",
+    "skops": "0.16.0"
+  },
+  "demo": true,
+  "quality_admitted": false,
+  "reference_archive_9": {
+    "artifact_sha256": "f63d5943e9c018fa6845a4ca5895f65c0a1c251e1b69ae973a9c8a9c7cb31d83",
+    "test": {
+      "metrics": {
+        "normal_points": 3133,
+        "false_alarms": 2965,
+        "incidents": 440,
+        "detected": 440,
+        "precision": 0.129222,
+        "recall": 1.0,
+        "f1": 0.228869,
+        "false_positive_rate": 0.946377,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 827,
+        "aftermath_alarms": 757
+      },
+      "families": {
+        "compose": {
+          "normal_points": 600,
+          "false_alarms": 600,
+          "incidents": 200,
+          "detected": 200,
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4,
+          "false_positive_rate": 1.0,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 0,
+          "aftermath_alarms": 0,
+          "scenarios": 200,
+          "scenarios_passed": 0,
+          "scenario_pass_rate": 0.0,
+          "scenario_pass_rate_wilson95": [
+            0.0,
+            0.0188
+          ]
+        },
+        "general": {
+          "normal_points": 1733,
+          "false_alarms": 1565,
+          "incidents": 40,
+          "detected": 40,
+          "precision": 0.024922,
+          "recall": 1.0,
+          "f1": 0.048632,
+          "false_positive_rate": 0.903058,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 627,
+          "aftermath_alarms": 557
+        },
+        "readme": {
+          "normal_points": 800,
+          "false_alarms": 800,
+          "incidents": 200,
+          "detected": 200,
+          "precision": 0.2,
+          "recall": 1.0,
+          "f1": 0.333333,
+          "false_positive_rate": 1.0,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 200,
+          "aftermath_alarms": 200,
+          "scenarios": 200,
+          "scenarios_passed": 0,
+          "scenario_pass_rate": 0.0,
+          "scenario_pass_rate_wilson95": [
+            0.0,
+            0.0188
+          ]
+        }
+      },
+      "targets": {
+        "event_recall": true,
+        "false_positive_rate": false,
+        "abrupt_median_delay_ticks": true
+      },
+      "targets_passed": false
+    }
+  }
+}

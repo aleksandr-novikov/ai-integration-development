@@ -152,8 +152,8 @@ docker compose run --rm --no-deps app python -m scripts.demo_prepare --slug reta
 Ожидаются 336 часовых точек за 14 дней, до 335 согласованных векторов на таблицу
 и результаты warmup без ожидания 200 реальных тиков. Сохранить summary; при
 нулевых счётчиках или ошибках не считать прогрев успешным. Сам warmup обучает
-унаследованные IF/прогнозы; следующий шаг отдельно выбирает **архивную #9
-модель**, а не приписывает ей результаты этого обучения.
+унаследованные IF/прогнозы; следующий шаг отдельно обучает **версионированную
+demo-модель** стенда, а не приписывает ей результаты этого обучения.
 
 Подготовить source для реального demo-подключения и отключить подключения к
 не поднятым бонусным БД. Команда проверяет DSN без его печати:
@@ -181,16 +181,34 @@ directory.mkdir(parents=True, exist_ok=True)
 (directory / 'source.json').write_text(json.dumps(source))
 print(json.dumps(source))
 PY
-docker compose run --rm --no-deps \
-  -v "$PWD/docs/course/experiments/mlflow-export.zip:/tmp/mlflow-export.zip:ro" \
-  app python -m scripts.model_versions --registry models/registry stage-export \
-  --source models/demo/source.json --archive /tmp/mlflow-export.zip > models/demo/manifest.json
+docker compose run --rm --no-deps app python -m scripts.demo_model train \
+  --registry models/registry --source models/demo/source.json \
+  --git-sha "$(git rev-parse HEAD)" --evaluation-out models/demo/evaluation.json \
+  > models/demo/manifest.json
+python3 - <<'PY'
+import json
+from pathlib import Path
+actual = json.loads(Path('models/demo/evaluation.json').read_text())
+expected = json.loads(Path('docs/course/containers/demo-model/evaluation.json').read_text())
+for key in ('train_data_sha256', 'test_data_sha256', 'scores_sha256'):
+    print(key, 'совпадает' if actual[key] == expected[key] else 'ОТЛИЧАЕТСЯ')
+print('цели test:', actual['test']['targets_passed'], actual['test']['metrics']['false_positive_rate'])
+PY
 ```
 
-Это явный импорт неизменяемого доверенного экспорта, без обучения, активации
-или допуска новой модели. Архив и реестр не входят в образ. Исходный SHA-256
-архива проверяет существующий реестр. Модель имеет FPR 13,27% при цели ≤10%
-и допустима только с `demo=true`. Не менять порог или score ради успеха показа.
+Команда (1–3 минуты) генерирует синтетическую историю нормального режима
+стенда реальными генераторами строк, обучает выбранную по протоколу
+конфигурацию `contamination_005` через `train_candidate` и один раз оценивает
+её на независимом test. Активации и допуска реестра нет: `evaluation` в
+манифест не пишется, версия загружается только с `demo=true`. Ожидаются
+совпадение SHA данных и score с зафиксированным
+[результатом](demo-model/RESULTS.md) и `targets_passed=True`; при
+несовпадении зафиксировать его, не подбирать данные/порог.
+[Протокол](demo-model/PROTOCOL.md) объясняет, почему архивная модель #9
+(обучена на 56–68 тыс. строк, FPR 13,27%) для стенда не подходит. Она
+сохранена без изменений и может быть импортирована для сравнения командой
+`scripts.model_versions stage-export` из [инференса](../inference/README.md);
+на векторах стенда она помечает почти все нормальные тики.
 
 Создать согласованные конфигурации из фактического манифеста:
 
@@ -250,6 +268,9 @@ PROJECT_ID="<project_id-из-source.json>"
 CONNECTION_ID="<connection_id-из-source.json>"
 mkdir -p artifacts/compose-demo
 set -o pipefail
+# Базовое наблюдение неизменённой таблицы: без него первый тик не имеет пары.
+docker compose run --rm --no-deps app python -c \
+  "from collectors.per_project import collect_for_connection; collect_for_connection('$PROJECT_ID', '$CONNECTION_ID')"
 docker compose run --rm --no-deps app python -m scripts.live_demo \
   --project-id "$PROJECT_ID" --connection-id "$CONNECTION_ID" \
   --ticks 3 --interval 5 2>&1 | tee artifacts/compose-demo/normal.log
@@ -267,8 +288,9 @@ docker compose exec -T timescaledb psql -U postgres -d metrics -c \
 ```
 
 `pipefail` не позволяет `tee` скрывать ошибки команды.
-Нормальный тик добавляет 200 строк с ожидаемыми ~2% NULL IP в новом пакете;
-инцидентный — 2000 строк с ~40% NULL и смещением server_id. Значения случайные,
+Нормальный тик добавляет 200 строк с ожидаемыми ~2% NULL IP и ~20% NULL
+`prev_event_*`, как у сидера; инцидентный — 2000 строк с ~40% NULL IP и
+смещением server_id. Значения случайные,
 общая доля NULL включает старые данные. `★ INCIDENT` подтверждает инъекцию,
 **не обнаружение**. Детектор подтверждается новой оценкой того же source/
 версии/времени с `is_anomaly=1`, полученной от FastAPI, а не seed-уведомлением.
@@ -292,14 +314,17 @@ docker compose exec -T timescaledb psql -U postgres -d metrics -c \
 пары и сама не оценивается; она даёт первому нормальному тику предыдущее
 наблюдение, так что каждый из трёх тиков получает свою оценку.
 
-**Ограничение архивной модели.** Модель `events` из #9 (FPR 13,27% на test,
-`quality_admitted=false`) обучена на синтетическом наборе #7 с шагом 15 минут:
-на train `row_count` 56 070–68 120, `d_row_count` от −115 до +138. Живое демо —
-2 000–5 200 строк и +200 строк за секундный нормальный тик. Почти все живые
-наблюдения лежат вне области обучения, поэтому ложные тревоги на нормальных
-тиках ожидаемы, а `incident_detected` при таких тревогах не доказывает
-обнаружение. Порог, модель и данные ради успешного результата не меняются;
-`check-outcome` фиксирует фактический отрицательный результат.
+**Ожидаемый результат demo-модели.** Нормальные тики — `is_anomaly=0`,
+инцидентный — `is_anomaly=1`. По независимому test такой сценарий проходит
+целиком в 95% случаев (190/200, 95% CI 0.91–0.97): примерно один показ из
+20 даёт ложную тревогу на нормальном тике. Тик **после** инцидента
+(`--ticks 3 --incident-at 2`, третий тик) часто остаётся аномальным (114/200
+на test): аварийные строки остаются в таблице и повышают `null_rate`. Это
+записывается как наблюдение последствий, а не как ложная тревога или
+обнаружение. Порог, модель и данные ради успешного показа не меняются; CI
+`check-outcome` фиксирует фактический результат и дополнительно требует
+выполнения целей test внутри образа. Архивная #9 на этих векторах помечает
+нормальные тики почти всегда ([сравнение](demo-model/RESULTS.md)).
 
 Войти на `http://127.0.0.1:15001/auth/login` как `demo@dbmonitor.app` с учебным
 паролем `demo12345`, выбрать Retail Postgres. На `/dashboard/inference`

@@ -1,12 +1,14 @@
 """Offline safety/result-policy tests; no simulated result is CI evidence."""
 
+import copy
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
@@ -14,6 +16,10 @@ from unittest.mock import Mock, patch
 import yaml
 
 from scripts import verify_compose_demo as verify
+
+# Committed offline evaluation, projected onto the report fields it may expose.
+DEMO_EVALUATION = {key: value for key, value in verify.read(verify.DEMO_MODEL_EVIDENCE).items()
+                   if key in verify.DEMO_MODEL}
 
 
 class ComposeVerificationTests(unittest.TestCase):
@@ -163,6 +169,35 @@ class ComposeVerificationTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     verify.main()
 
+    def test_outcome_command_also_requires_the_demo_model_test_targets(self):
+        failing = copy.deepcopy(DEMO_EVALUATION)
+        failing["test"]["targets_passed"] = False
+        for demo_model, passes in ((DEMO_EVALUATION, True), (failing, False), (None, False)):
+            with self.subTest(passes=passes), tempfile.TemporaryDirectory() as temporary:
+                report = Path(temporary) / "report.json"
+                value = {"technical_pass": True, "model_scenario": {"passed": True}, "prepared": {}}
+                if demo_model is not None:
+                    value["prepared"]["demo_model"] = demo_model
+                report.write_text(json.dumps(value))
+                with patch.object(verify, "REPORT", report), \
+                        patch.object(verify.sys, "argv", ["verify", "check-outcome"]), redirect_stdout(io.StringIO()):
+                    if passes:
+                        verify.main()
+                    else:
+                        with self.assertRaisesRegex(SystemExit, "independent test split"):
+                            verify.main()
+
+    def test_committed_demo_model_evidence_fits_the_report_schema_and_reproduction_check(self):
+        evidence = verify.read(verify.DEMO_MODEL_EVIDENCE)
+        public = verify.public_report({"prepared": {"demo_model": evidence}})["prepared"]["demo_model"]
+        self.assertEqual(public, {key: value for key, value in evidence.items() if key in verify.DEMO_MODEL})
+        self.assertTrue(public["test"]["targets_passed"])
+        self.assertEqual(verify.reproduced(evidence), dict.fromkeys(verify.REPRODUCED, True))
+        changed = {**evidence, "scores_sha256": "0" * 64}
+        self.assertFalse(verify.reproduced(changed)["scores_sha256"])
+        with self.assertRaisesRegex(AssertionError, "recorded generator"):
+            verify.reproduced({**evidence, "test_data_sha256": "0" * 64})
+
     def test_ci_reuses_one_image_and_uploads_only_the_sanitized_report(self):
         job = yaml.safe_load((verify.ROOT / ".github/workflows/tests.yml").read_text())["jobs"]["integration"]
         self.assertEqual(job["timeout-minutes"], 30)
@@ -228,7 +263,10 @@ class PrepareDiagnosticsTests(unittest.TestCase):
         app.metrics_storage.list_projects_for_user.return_value = [{"id": source["project_id"]}, {"id": "other"}]
         app.metrics_storage.list_connections_for_project.return_value = [{"id": "disabled"}]
         manifest = {"model_version": "if-" + "c" * 64, "feature_schema_version": "1.0.0"}
-        registry.stage_export = Mock(side_effect=action("registry_export", manifest))
+        evaluation = {**DEMO_EVALUATION, "log": self.private}
+        registry.stage_export = Mock(side_effect=AssertionError("#9 export is no longer the demo model"))
+        scripts.demo_model = SimpleNamespace(
+            train_and_evaluate=Mock(side_effect=action("demo_model", (manifest, evaluation))))
         scripts.seed_target_db = SimpleNamespace(main=Mock(side_effect=action("target_seed")))
         summary = {"retail-postgres": {"metrics": 336, "anomaly_scores": 335, "forecast_models": 1}}
         if failed == "summary_check":
@@ -238,20 +276,26 @@ class PrepareDiagnosticsTests(unittest.TestCase):
                    "ml.model_registry": registry, "scripts": scripts}
         with ExitStack() as stack:
             stack.enter_context(patch.dict(sys.modules, modules))
-            stack.enter_context(patch.dict(os.environ, {} if failed == "guard" else {"COMPOSE_DEMO_TEST": "1"}, clear=True))
+            stack.enter_context(patch.dict(os.environ, {} if failed == "guard" else
+                                           {"COMPOSE_DEMO_TEST": "1", "APP_VERSION": "d" * 40}, clear=True))
             stack.enter_context(patch.object(verify.Path, "exists", return_value=True))
             stack.enter_context(patch.object(verify, "container_state", side_effect=action("source_check", source)))
             if failed == "config_write":
                 stack.enter_context(patch.object(verify, "save", side_effect=PermissionError(self.private)))
             verify.prepare()
         scripts.seed_target_db.main.assert_called_once_with(n_users=500, n_products=50, n_orders=1000, n_events=2000)
-        self.assertEqual(calls, ["target_seed", "demo_prepare", "source_check", "registry_export"])
-        registry.stage_export.assert_called_once_with(self.root / "models/registry", Path("/tmp/mlflow-export.zip"), source=source)
+        self.assertEqual(calls, ["target_seed", "demo_prepare", "source_check", "demo_model"])
+        scripts.demo_model.train_and_evaluate.assert_called_once_with(self.root / "models/registry", source, "d" * 40)
+        registry.stage_export.assert_not_called()
         self.assertEqual(app.metrics_storage.set_connection_active.call_count, 2)
         prepared = verify.read(verify.DEMO / "prepared.json")
         self.assertTrue(prepared["demo"])
         self.assertFalse(prepared["quality_admitted"])
-        self.assertEqual(prepared["baseline_fpr"], 0.1327)
+        self.assertEqual(prepared["binding"]["model_version"], manifest["model_version"])
+        self.assertNotIn("baseline_fpr", prepared)
+        self.assertNotIn("log", prepared["demo_model"])
+        self.assertEqual(verify.public_report({"prepared": prepared})["prepared"]["demo_model"], DEMO_EVALUATION)
+        self.assertEqual(verify.read(verify.DEMO / "evaluation.json")["log"], self.private)
 
     def test_preflight_round_trip_is_private_and_requires_a_fresh_exchange(self):
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
@@ -656,8 +700,8 @@ class NetworkProbeTests(unittest.TestCase):
             replacement.start()
             self.addCleanup(replacement.stop)
         verify.save(verify.DEMO / "prepared.json", {"binding": BINDING, "warmup": {}, "demo": True,
-                                                    "quality_admitted": False, "baseline_fpr": 0.1327,
-                                                    "fernet_key_shared": True})
+                                                    "quality_admitted": False, "fernet_key_shared": True,
+                                                    "demo_model": DEMO_EVALUATION})
         self.calls = []
 
     def fake_httpx(self, handler):
@@ -842,6 +886,7 @@ class NetworkProbeTests(unittest.TestCase):
     def test_host_run_uses_container_probes_and_no_published_host_ports(self):
         run, commands = self.host_run()
         self.assertTrue(run.report["technical_pass"])
+        self.assertEqual(run.report["demo_model_reproduced"], dict.fromkeys(verify.REPRODUCED, True))
         self.assertEqual(verify.read(verify.OVERRIDE)["networks"], {"default": {"internal": True}})
         probes = [(label, args[args.index("scripts.verify_compose_demo") + 1]) for label, args in commands
                   if "scripts.verify_compose_demo" in args and label != "prepare diagnostics preflight"]
