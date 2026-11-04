@@ -631,5 +631,240 @@ class PrepareDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("fixture", self.path.read_text())
 
 
+SOURCE = {"project_id": "a" * 32, "connection_id": "b" * 32, "schema_name": "public", "table_name": "events"}
+BINDING = {"source": SOURCE, "model_version": "if-" + "c" * 64, "feature_schema_version": "1.0.0"}
+ROW = {**BINDING, "ts": "2026-11-03T03:00:00+00:00", "score": -0.2, "is_anomaly": True,
+       "demo": True, "quality_admitted": False,
+       "features": {"row_count": 2000, "null_rate": 0.1, "d_row_count": 200, "d_null_rate": 0.01}}
+
+
+class NetworkProbeTests(unittest.TestCase):
+    """HTTP checks run inside the internal Compose network, never via host-published ports."""
+
+    private = "fixture-private-token https://fixture.invalid/private"
+    token = "fixture-adapter-token"
+    sha = "a" * 40
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        for name, value in (("ROOT", self.root), ("DEMO", self.root / "models/demo"),
+                            ("STATE", self.root / "state.json"), ("OVERRIDE", self.root / "override.json"),
+                            ("REPORT", self.root / "report.json")):
+            replacement = patch.object(verify, name, value)
+            replacement.start()
+            self.addCleanup(replacement.stop)
+        verify.save(verify.DEMO / "prepared.json", {"binding": BINDING, "warmup": {}, "demo": True,
+                                                    "quality_admitted": False, "baseline_fpr": 0.1327,
+                                                    "fernet_key_shared": True})
+        self.calls = []
+
+    def fake_httpx(self, handler):
+        calls = self.calls
+
+        class Response:
+            def __init__(self, status, body=None, text="", url=""):
+                self.status_code, self.body, self.text, self.url = status, body, text, url
+
+            def json(self):
+                return self.body
+
+        class Client:
+            def __init__(self, base_url="", **kwargs):
+                self.base_url = base_url
+                assert kwargs.get("trust_env") is False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def request(self, method, url, headers=None, **kwargs):
+                calls.append((method, self.base_url + url))
+                return Response(*handler(method, self.base_url + url, headers or {}))
+
+            def get(self, url, **kwargs):
+                return self.request("GET", url, **kwargs)
+
+            def post(self, url, **kwargs):
+                return self.request("POST", url, **kwargs)
+
+        module = ModuleType("httpx")
+        module.Client = Client
+        return module
+
+    def inside(self, handler):
+        stack = ExitStack()
+        stack.enter_context(patch.dict(sys.modules, {"httpx": self.fake_httpx(handler)}))
+        stack.enter_context(patch.dict(os.environ, {"COMPOSE_DEMO_TEST": "1", "INFERENCE_ADAPTER_TOKEN": self.token}, clear=True))
+        stack.enter_context(patch.object(verify.Path, "exists", return_value=True))
+        return stack
+
+    def service(self, health=200, unauthorized=401, model=None):
+        model = {**BINDING, "demo": True, "quality_admitted": False, "error": self.private} if model is None else model
+
+        def handler(method, url, headers):
+            if url == "http://app:5001/healthz":
+                return health, {"status": "ok", "version": self.sha, "checks": {
+                    "target_db": {"status": "ok"}, "monitor_db": {"status": "ok", "backend": "postgresql"}}}
+            if url == "http://inference:8000/v1/model":
+                if headers.get("Authorization") == "Bearer " + self.token:
+                    return 200, model
+                return unauthorized, {"error": {"code": "authentication_required"}}
+            raise AssertionError("unexpected URL")
+        return handler
+
+    def dashboard_service(self, rows, logged_url="http://app:5001/dashboard"):
+        page = " ".join((SOURCE["connection_id"], BINDING["model_version"], rows[-1]["ts"], str(rows[-1]["score"])))
+
+        def handler(method, url, headers):
+            responses = {
+                ("GET", "http://app:5001/auth/login"): (200, None, '<input name="csrf_token" type="hidden" value="fixture-csrf">'),
+                ("POST", "http://app:5001/auth/login"): (200, None, "", logged_url),
+                ("POST", "http://app:5001/projects/retail-postgres/switch"): (200,),
+                ("GET", "http://app:5001/dashboard/inference"): (200, None, page),
+                ("GET", "http://app:5001/api/inference/scores"): (200, [{"ts": rows[-1]["ts"], "score": rows[-1]["score"]}]),
+            }
+            return responses[(method, url)]
+        return handler
+
+    def test_readiness_uses_service_names_and_keeps_only_contract_fields(self):
+        with self.inside(self.service()):
+            verify.readiness()
+        self.assertEqual([url for _, url in self.calls], ["http://app:5001/healthz", "http://inference:8000/v1/model",
+                                                          "http://inference:8000/v1/model"])
+        content = (verify.DEMO / "readiness.json").read_text()
+        self.assertNotIn(self.token, content)
+        self.assertNotIn("fixture", content)
+        self.assertEqual(json.loads(content), {
+            "version": self.sha, "target_db": "ok", "monitor_db": "ok", "monitor_backend": "postgresql",
+            "unauthorized_model_status": 401, "model": {**BINDING, "demo": True, "quality_admitted": False}})
+
+    def test_readiness_keeps_status_authorization_and_demo_assertions(self):
+        cases = {"unhealthy": {"health": 503}, "unauthenticated_access": {"unauthorized": 200},
+                 "admitted_model": {"model": {**BINDING, "demo": True, "quality_admitted": True}},
+                 "not_demo": {"model": {**BINDING, "demo": False, "quality_admitted": False}}}
+        for name, options in cases.items():
+            with self.subTest(name), self.inside(self.service(**options)):
+                with self.assertRaises(AssertionError):
+                    verify.readiness()
+                self.assertFalse((verify.DEMO / "readiness.json").is_file())
+
+    def test_http_probes_refuse_outside_the_isolated_test_container(self):
+        with patch.dict(sys.modules, {"httpx": self.fake_httpx(self.service())}), patch.dict(os.environ, {}, clear=True):
+            for probe in (verify.readiness, lambda: verify.dashboard("incident")):
+                with self.assertRaises(RuntimeError):
+                    probe()
+        self.assertEqual(self.calls, [])
+
+    def test_dashboard_reads_each_phase_and_writes_a_separate_result(self):
+        for phase in ("incident", "after-recreate"):
+            with self.subTest(phase):
+                rows = [{**ROW, "ts": f"2026-11-03T0{index}:00:00+00:00", "score": -0.1 * index}
+                        for index in (1, 2 if phase == "incident" else 3)]
+                verify.save(verify.DEMO / (phase + ".json"), rows)
+                self.calls.clear()
+                with self.inside(self.dashboard_service(rows)):
+                    verify.dashboard(phase)
+                self.assertTrue(all(url.startswith("http://app:5001/") for _, url in self.calls))
+                self.assertEqual(verify.read(verify.DEMO / ("dashboard-" + phase + ".json")), {
+                    "status": 200, "csrf_login": True, "source": SOURCE, "version": BINDING["model_version"],
+                    "observed_at": rows[-1]["ts"], "score_visible": True, "scope": "HTTP HTML/API, not browser rendering"})
+
+    def test_dashboard_keeps_login_and_visibility_assertions(self):
+        rows = [ROW]
+        verify.save(verify.DEMO / "incident.json", rows)
+        with self.inside(self.dashboard_service(rows, logged_url="http://app:5001/auth/login")):
+            with self.assertRaises(AssertionError):
+                verify.dashboard("incident")
+        with self.inside(self.dashboard_service([{**ROW, "score": 0.9}])):
+            with self.assertRaises(AssertionError):
+                verify.dashboard("incident")
+        with self.inside(self.dashboard_service(rows)), self.assertRaises(ValueError):
+            verify.dashboard("../prepared")
+        self.assertFalse((verify.DEMO / "dashboard-incident.json").is_file())
+
+    def test_inside_modes_dispatch_to_container_probes(self):
+        for argument, name, args in (("inside-readiness", "readiness", ()),
+                                     ("inside-dashboard-incident", "dashboard", ("incident",)),
+                                     ("inside-dashboard-after-recreate", "dashboard", ("after-recreate",))):
+            with self.subTest(argument), patch.object(verify, name) as probe, \
+                    patch.object(verify.sys, "argv", ["verify", argument]):
+                verify.main()
+            probe.assert_called_once_with(*args)
+
+    def host_run(self, readiness_version=None):
+        """Execute the real host run() with Docker commands mocked; container probes write their files."""
+        image_id = "sha256:" + "d" * 64
+        outputs = {
+            "readiness": {"version": readiness_version or self.sha, "target_db": "ok", "monitor_db": "ok",
+                          "monitor_backend": "postgresql", "unauthorized_model_status": 401,
+                          "model": {**BINDING, "demo": True, "quality_admitted": False}},
+            "normal": [{**ROW, "is_anomaly": False}], "incident": [ROW], "after-recreate": [ROW],
+            "snapshot": {"source": SOURCE, "fernet_decryption": True, "target": {}, "store": {}, "artifacts": {}},
+        }
+        dashboard = {"status": 200, "csrf_login": True, "source": SOURCE, "version": BINDING["model_version"],
+                     "observed_at": ROW["ts"], "score_visible": True, "scope": "HTTP HTML/API, not browser rendering"}
+        outputs["dashboard-incident"] = outputs["dashboard-after-recreate"] = dashboard
+        commands = []
+
+        def docker(args, **kwargs):
+            # The real command()/compose()/probe() set the stage label before each call.
+            label = run.stage
+            commands.append((label, args))
+            inside = next((arg.removeprefix("inside-") for arg in args if arg.startswith("inside-")), None)
+            if inside is not None:
+                verify.save(verify.DEMO / (inside + ".json"), outputs[inside])
+            stdout = {"checkout SHA": self.sha, "Docker version": "28.0.0 / 28.0.0", "Compose version": "2.30.0",
+                      "inspect image": json.dumps([{"Id": image_id, "Config": {"Env": ["APP_VERSION=" + self.sha]}}]),
+                      "app container ID": "app-id", "inference container ID": "inference-id",
+                      "app image ID": image_id, "inference image ID": image_id}.get(label, "")
+            return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+        run = object.__new__(verify.ComposeRun)
+        run.values, run.stage = {}, "verification"
+        run.report = {"technical_pass": False, "steps": [], "manual_browser_and_second_participant": "NOT VERIFIED"}
+        run.prepare_in_container = Mock()
+        self.host = run
+        host_httpx = ModuleType("httpx")
+        host_httpx.Client = Mock(side_effect=AssertionError("host HTTP request"))
+        with patch.dict(os.environ, {"COMPOSE_SMOKE_SHA": self.sha, "COMPOSE_SMOKE_IMAGE": "course13-ci:1",
+                                     "COMPOSE_SMOKE_PR_HEAD": "b" * 40, "GITHUB_RUN_ID": "1"}), \
+                patch.dict(sys.modules, {"httpx": host_httpx}), patch.object(verify.subprocess, "run", side_effect=docker):
+            try:
+                run.run()
+            finally:
+                host_httpx.Client.assert_not_called()
+        return run, commands
+
+    def test_host_run_uses_container_probes_and_no_published_host_ports(self):
+        run, commands = self.host_run()
+        self.assertTrue(run.report["technical_pass"])
+        self.assertEqual(verify.read(verify.OVERRIDE)["networks"], {"default": {"internal": True}})
+        probes = [(label, args[args.index("scripts.verify_compose_demo") + 1]) for label, args in commands
+                  if "scripts.verify_compose_demo" in args and label != "prepare diagnostics preflight"]
+        self.assertEqual(probes, [("readiness", "inside-readiness"), ("normal", "inside-normal"),
+                                  ("incident", "inside-incident"), ("dashboard", "inside-dashboard-incident"),
+                                  ("snapshot", "inside-snapshot"), ("snapshot", "inside-snapshot"),
+                                  ("snapshot", "inside-snapshot"), ("after-recreate", "inside-after-recreate"),
+                                  ("dashboard after recreate", "inside-dashboard-after-recreate")])
+        self.assertFalse(any("127.0.0.1" in str(args) for _, args in commands))
+        self.assertEqual(run.report["readiness"], {"target_db": "ok", "monitor_db": "ok", "monitor_backend": "postgresql",
+                                                   "unauthorized_model_status": 401,
+                                                   "model": {**BINDING, "demo": True, "quality_admitted": False}})
+        public = verify.public_report(run.report)
+        for key in ("readiness", "dashboard", "dashboard_after_recreate"):
+            self.assertEqual(public[key], run.report[key])
+
+    def test_host_run_still_requires_the_checked_application_version(self):
+        with self.assertRaises(AssertionError) as raised:
+            self.host_run(readiness_version="f" * 40)
+        self.assertEqual(verify.failure_fields(raised.exception, self.host.stage),
+                         {"stage": "readiness", "exit_code": None, "error_type": "assertion_failed"})
+        self.assertNotIn("readiness", self.host.report)
+
+
 if __name__ == "__main__":
     unittest.main()

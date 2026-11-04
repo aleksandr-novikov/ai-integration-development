@@ -41,6 +41,10 @@ SQLSTATES = ("08001", "08003", "08006", "28P01", "3D000", "3F000", "42P01", "427
              "22003", "22007", "22008", "22P02", "25P02", "40001", "40P01", "53300",
              "57014", "0A000", "XX000")
 DIAGNOSTICS_LIMIT = 8192
+# The CI network is internal, so published host ports are unreachable from the
+# runner; HTTP checks run in a one-off app container and use service names.
+APP_URL = "http://app:5001"
+INFERENCE_URL = "http://inference:8000"
 
 
 def save(path, value):
@@ -513,6 +517,64 @@ def snapshot():
     save(DEMO / "snapshot.json", result)
 
 
+def require_test_container():
+    if os.environ.get("COMPOSE_DEMO_TEST") != "1" or not Path("/.dockerenv").exists():
+        raise RuntimeError("HTTP probes require the isolated Compose test container")
+
+
+def readiness():
+    require_test_container()
+    import httpx
+
+    binding = read(DEMO / "prepared.json")["binding"]
+    with httpx.Client(timeout=30, trust_env=False) as client:
+        health = client.get(APP_URL + "/healthz")
+        assert health.status_code == 200
+        checks = health.json()["checks"]
+        assert checks["target_db"]["status"] == checks["monitor_db"]["status"] == "ok"
+        assert checks["monitor_db"]["backend"] == "postgresql"
+        url = INFERENCE_URL + "/v1/model"
+        params = {**binding["source"], **{k: binding[k] for k in ("model_version", "feature_schema_version")}}
+        assert client.get(url, params=params).status_code == 401
+        model = client.get(url, params=params, headers={"Authorization": "Bearer " + os.environ["INFERENCE_ADAPTER_TOKEN"]})
+        assert model.status_code == 200
+        assert model.json()["demo"] is True and model.json()["quality_admitted"] is False
+    body = model.json()
+    # The parent compares the version with the checked SHA; only contract fields are kept.
+    save(DEMO / "readiness.json", {"version": health.json()["version"], "target_db": "ok", "monitor_db": "ok",
+                                   "monitor_backend": "postgresql", "unauthorized_model_status": 401,
+                                   "model": {key: body[key] for key in {**BINDING, **DEMO_FLAGS} if key in body}})
+
+
+def dashboard(phase):
+    require_test_container()
+    import httpx
+
+    if phase not in ("incident", "after-recreate"):
+        raise ValueError("unknown dashboard phase")
+    rows = read(DEMO / (phase + ".json"))
+    binding = read(DEMO / "prepared.json")["binding"]
+    source = binding["source"]
+    with httpx.Client(base_url=APP_URL, follow_redirects=True, timeout=30, trust_env=False) as client:
+        login = client.get("/auth/login")
+        assert login.status_code == 200
+        token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', login.text).group(1)
+        logged = client.post("/auth/login", data={"email": "demo@dbmonitor.app", "password": "demo12345", "csrf_token": token})
+        assert logged.status_code == 200 and "/auth/login" not in str(logged.url)
+        switched = client.post("/projects/retail-postgres/switch", data={"csrf_token": token})
+        assert switched.status_code == 200
+        page = client.get("/dashboard/inference")
+        assert page.status_code == 200
+        assert all(value in page.text for value in (source["connection_id"], binding["model_version"], rows[-1]["ts"], str(rows[-1]["score"])))
+        params = {**source, **{k: binding[k] for k in ("model_version", "feature_schema_version")}}
+        response = client.get("/api/inference/scores", params=params)
+        assert response.status_code == 200
+        assert any(r["ts"] == rows[-1]["ts"] and r["score"] == rows[-1]["score"] for r in response.json())
+    save(DEMO / ("dashboard-" + phase + ".json"),
+         {"status": 200, "csrf_login": True, "source": source, "version": binding["model_version"],
+          "observed_at": rows[-1]["ts"], "score_visible": True, "scope": "HTTP HTML/API, not browser rendering"})
+
+
 class ComposeRun:
     def __init__(self):
         runner_only()
@@ -542,8 +604,8 @@ class ComposeRun:
         return self.command(label, ["docker", "compose", "-p", project, "-f", "docker-compose.yml",
                                     "-f", str(OVERRIDE.relative_to(ROOT)), "--profile", "inference", *args], timeout)
 
-    def probe(self, mode):
-        self.compose(mode, "run", "--rm", "-T", "--no-deps", "app", "python", "-m",
+    def probe(self, mode, label=None):
+        self.compose(label or mode, "run", "--rm", "-T", "--no-deps", "app", "python", "-m",
                      "scripts.verify_compose_demo", "inside-" + mode, timeout=600)
 
     def prepare_in_container(self):
@@ -566,30 +628,6 @@ class ComposeRun:
             # Also runs on command failure/timeout, including before the first checkpoint.
             self.report["prepare_diagnostics"] = collect_prepare_diagnostics()
             save_report(self.report)
-
-    def dashboard(self, rows):
-        import httpx
-
-        binding = read(DEMO / "prepared.json")["binding"]
-        source = binding["source"]
-        with httpx.Client(base_url="http://127.0.0.1:" + self.values["PORT"],
-                          follow_redirects=True, timeout=30, trust_env=False) as client:
-            login = client.get("/auth/login")
-            assert login.status_code == 200
-            token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', login.text).group(1)
-            logged = client.post("/auth/login", data={"email": "demo@dbmonitor.app", "password": "demo12345", "csrf_token": token})
-            assert logged.status_code == 200 and "/auth/login" not in str(logged.url)
-            switched = client.post("/projects/retail-postgres/switch", data={"csrf_token": token})
-            assert switched.status_code == 200
-            page = client.get("/dashboard/inference")
-            assert page.status_code == 200
-            assert all(value in page.text for value in (source["connection_id"], binding["model_version"], rows[-1]["ts"], str(rows[-1]["score"])))
-            params = {**source, **{k: binding[k] for k in ("model_version", "feature_schema_version")}}
-            response = client.get("/api/inference/scores", params=params)
-            assert response.status_code == 200
-            assert any(r["ts"] == rows[-1]["ts"] and r["score"] == rows[-1]["score"] for r in response.json())
-        return {"status": 200, "csrf_login": True, "source": source, "version": binding["model_version"],
-                "observed_at": rows[-1]["ts"], "score_visible": True, "scope": "HTTP HTML/API, not browser rendering"}
 
     def run(self):
         from scripts.init_compose_demo import create_environment
@@ -631,31 +669,17 @@ class ComposeRun:
             actual_image = self.command(service + " image ID", ["docker", "inspect", "--format", "{{.Image}}", cid]).strip()
             assert actual_image == image_info["Id"]
             self.report["serving_image_ids"][service] = actual_image
-        import httpx
-
-        binding = self.report["prepared"]["binding"]
-        self.stage = "readiness"
-        with httpx.Client(timeout=30, trust_env=False) as client:
-            health = client.get("http://127.0.0.1:" + self.values["PORT"] + "/healthz")
-            assert health.status_code == 200
-            assert health.json()["version"] == sha
-            checks = health.json()["checks"]
-            assert checks["target_db"]["status"] == checks["monitor_db"]["status"] == "ok"
-            assert checks["monitor_db"]["backend"] == "postgresql"
-            url = "http://127.0.0.1:" + self.values["INFERENCE_PORT"] + "/v1/model"
-            params = {**binding["source"], **{k: binding[k] for k in ("model_version", "feature_schema_version")}}
-            assert client.get(url, params=params).status_code == 401
-            model = client.get(url, params=params, headers={"Authorization": "Bearer " + self.values["INFERENCE_ADAPTER_TOKEN"]})
-            assert model.status_code == 200
-            assert model.json()["demo"] is True and model.json()["quality_admitted"] is False
-            self.report["readiness"] = {"target_db": "ok", "monitor_db": "ok", "monitor_backend": "postgresql", "model": model.json(), "unauthorized_model_status": 401}
+        self.probe("readiness")
+        ready = read(DEMO / "readiness.json")
+        assert ready.pop("version") == sha
+        self.report["readiness"] = ready
         for phase in ("normal", "incident"):
             self.probe(phase)
             self.report[phase] = read(DEMO / (phase + ".json"))
             save_report(self.report)
         self.report["model_scenario"] = outcome(self.report["normal"], self.report["incident"])
-        self.stage = "dashboard"
-        self.report["dashboard"] = self.dashboard(self.report["incident"])
+        self.probe("dashboard-incident", "dashboard")
+        self.report["dashboard"] = read(DEMO / "dashboard-incident.json")
         self.compose("stop scheduler before persistence check", "stop", "app", "inference")
         self.probe("snapshot")
         before = read(DEMO / "snapshot.json")
@@ -674,8 +698,8 @@ class ComposeRun:
         self.compose("recreate application and inference", "up", "-d", "--no-build", "--force-recreate", "--wait", "--wait-timeout", "150", "app", "inference")
         self.probe("after-recreate")
         self.report["after_recreate"] = read(DEMO / "after-recreate.json")
-        self.stage = "dashboard after recreate"
-        self.report["dashboard_after_recreate"] = self.dashboard(self.report["after_recreate"])
+        self.probe("dashboard-after-recreate", "dashboard after recreate")
+        self.report["dashboard_after_recreate"] = read(DEMO / "dashboard-after-recreate.json")
         self.report["technical_pass"] = True
 
 
@@ -702,7 +726,9 @@ def cleanup():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("run", "cleanup", "check-outcome", "inside-prepare-preflight", "inside-prepare", "inside-normal", "inside-incident", "inside-after-recreate", "inside-snapshot"))
+    parser.add_argument("mode", choices=("run", "cleanup", "check-outcome", "inside-prepare-preflight", "inside-prepare",
+                                         "inside-readiness", "inside-normal", "inside-incident", "inside-dashboard-incident",
+                                         "inside-after-recreate", "inside-dashboard-after-recreate", "inside-snapshot"))
     mode = parser.parse_args().mode
     if mode.startswith("inside-"):
         action = mode.removeprefix("inside-")
@@ -712,6 +738,10 @@ def main():
             prepare()
         elif action == "snapshot":
             snapshot()
+        elif action == "readiness":
+            readiness()
+        elif action.startswith("dashboard-"):
+            dashboard(action.removeprefix("dashboard-"))
         else:
             observe(action)
     elif mode == "cleanup":
