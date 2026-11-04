@@ -1,0 +1,338 @@
+{
+  "regime": "compose-demo-normal/1",
+  "train_data_sha256": "f6708b40721fc7640f927e03e3215cea7ad26596e197d9c07ec88e169230700a",
+  "validation_data_sha256": "7e3c1fe986bf078c74c852513fef7825d6c5e28eb5600346e1bade40c31bdb7e",
+  "training_vectors": 4000,
+  "validation_vectors": 1600,
+  "rule": "targets on validation, then max F1, lower FPR, fewer trees, name",
+  "selected": "contamination_005",
+  "targets_met": true,
+  "candidates": {
+    "baseline": {
+      "parameters": {
+        "contamination": 0.01,
+        "n_estimators": 100,
+        "max_samples": 256
+      },
+      "metrics": {
+        "normal_points": 1175,
+        "false_alarms": 19,
+        "incidents": 120,
+        "detected": 120,
+        "precision": 0.863309,
+        "recall": 1.0,
+        "f1": 0.926641,
+        "false_positive_rate": 0.01617,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 305,
+        "aftermath_alarms": 168
+      },
+      "families": {
+        "compose": {
+          "normal_points": 300,
+          "false_alarms": 5,
+          "incidents": 100,
+          "detected": 100,
+          "precision": 0.952381,
+          "recall": 1.0,
+          "f1": 0.97561,
+          "false_positive_rate": 0.016667,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 0,
+          "aftermath_alarms": 0,
+          "scenarios": 100,
+          "scenarios_passed": 96,
+          "scenario_pass_rate": 0.96,
+          "scenario_pass_rate_wilson95": [
+            0.9016,
+            0.9843
+          ]
+        },
+        "general": {
+          "normal_points": 875,
+          "false_alarms": 14,
+          "incidents": 20,
+          "detected": 20,
+          "precision": 0.588235,
+          "recall": 1.0,
+          "f1": 0.740741,
+          "false_positive_rate": 0.016,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 305,
+          "aftermath_alarms": 168
+        }
+      },
+      "targets": {
+        "event_recall": true,
+        "false_positive_rate": true,
+        "abrupt_median_delay_ticks": true
+      },
+      "targets_passed": true
+    },
+    "contamination_005": {
+      "parameters": {
+        "contamination": 0.005,
+        "n_estimators": 100,
+        "max_samples": 256
+      },
+      "metrics": {
+        "normal_points": 1175,
+        "false_alarms": 10,
+        "incidents": 120,
+        "detected": 120,
+        "precision": 0.923077,
+        "recall": 1.0,
+        "f1": 0.96,
+        "false_positive_rate": 0.008511,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 305,
+        "aftermath_alarms": 119
+      },
+      "families": {
+        "compose": {
+          "normal_points": 300,
+          "false_alarms": 3,
+          "incidents": 100,
+          "detected": 100,
+          "precision": 0.970874,
+          "recall": 1.0,
+          "f1": 0.985222,
+          "false_positive_rate": 0.01,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 0,
+          "aftermath_alarms": 0,
+          "scenarios": 100,
+          "scenarios_passed": 98,
+          "scenario_pass_rate": 0.98,
+          "scenario_pass_rate_wilson95": [
+            0.93,
+            0.9945
+          ]
+        },
+        "general": {
+          "normal_points": 875,
+          "false_alarms": 7,
+          "incidents": 20,
+          "detected": 20,
+          "precision": 0.740741,
+          "recall": 1.0,
+          "f1": 0.851064,
+          "false_positive_rate": 0.008,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 305,
+          "aftermath_alarms": 119
+        }
+      },
+      "targets": {
+        "event_recall": true,
+        "false_positive_rate": true,
+        "abrupt_median_delay_ticks": true
+      },
+      "targets_passed": true
+    },
+    "contamination_050": {
+      "parameters": {
+        "contamination": 0.05,
+        "n_estimators": 100,
+        "max_samples": 256
+      },
+      "metrics": {
+        "normal_points": 1175,
+        "false_alarms": 121,
+        "incidents": 120,
+        "detected": 120,
+        "precision": 0.497925,
+        "recall": 1.0,
+        "f1": 0.66482,
+        "false_positive_rate": 0.102979,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 305,
+        "aftermath_alarms": 298
+      },
+      "families": {
+        "compose": {
+          "normal_points": 300,
+          "false_alarms": 71,
+          "incidents": 100,
+          "detected": 100,
+          "precision": 0.584795,
+          "recall": 1.0,
+          "f1": 0.738007,
+          "false_positive_rate": 0.236667,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 0,
+          "aftermath_alarms": 0,
+          "scenarios": 100,
+          "scenarios_passed": 47,
+          "scenario_pass_rate": 0.47,
+          "scenario_pass_rate_wilson95": [
+            0.3751,
+            0.5671
+          ]
+        },
+        "general": {
+          "normal_points": 875,
+          "false_alarms": 50,
+          "incidents": 20,
+          "detected": 20,
+          "precision": 0.285714,
+          "recall": 1.0,
+          "f1": 0.444444,
+          "false_positive_rate": 0.057143,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 305,
+          "aftermath_alarms": 298
+        }
+      },
+      "targets": {
+        "event_recall": true,
+        "false_positive_rate": false,
+        "abrupt_median_delay_ticks": true
+      },
+      "targets_passed": false
+    },
+    "trees_300": {
+      "parameters": {
+        "contamination": 0.01,
+        "n_estimators": 300,
+        "max_samples": 256
+      },
+      "metrics": {
+        "normal_points": 1175,
+        "false_alarms": 26,
+        "incidents": 120,
+        "detected": 120,
+        "precision": 0.821918,
+        "recall": 1.0,
+        "f1": 0.902256,
+        "false_positive_rate": 0.022128,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 305,
+        "aftermath_alarms": 124
+      },
+      "families": {
+        "compose": {
+          "normal_points": 300,
+          "false_alarms": 11,
+          "incidents": 100,
+          "detected": 100,
+          "precision": 0.900901,
+          "recall": 1.0,
+          "f1": 0.947867,
+          "false_positive_rate": 0.036667,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 0,
+          "aftermath_alarms": 0,
+          "scenarios": 100,
+          "scenarios_passed": 91,
+          "scenario_pass_rate": 0.91,
+          "scenario_pass_rate_wilson95": [
+            0.8377,
+            0.9519
+          ]
+        },
+        "general": {
+          "normal_points": 875,
+          "false_alarms": 15,
+          "incidents": 20,
+          "detected": 20,
+          "precision": 0.571429,
+          "recall": 1.0,
+          "f1": 0.727273,
+          "false_positive_rate": 0.017143,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 305,
+          "aftermath_alarms": 124
+        }
+      },
+      "targets": {
+        "event_recall": true,
+        "false_positive_rate": true,
+        "abrupt_median_delay_ticks": true
+      },
+      "targets_passed": false
+    },
+    "samples_128": {
+      "parameters": {
+        "contamination": 0.01,
+        "n_estimators": 100,
+        "max_samples": 128
+      },
+      "metrics": {
+        "normal_points": 1175,
+        "false_alarms": 17,
+        "incidents": 120,
+        "detected": 120,
+        "precision": 0.875912,
+        "recall": 1.0,
+        "f1": 0.933852,
+        "false_positive_rate": 0.014468,
+        "event_recall": 1.0,
+        "abrupt_median_delay_ticks": 0.0,
+        "aftermath_points": 305,
+        "aftermath_alarms": 174
+      },
+      "families": {
+        "compose": {
+          "normal_points": 300,
+          "false_alarms": 4,
+          "incidents": 100,
+          "detected": 100,
+          "precision": 0.961538,
+          "recall": 1.0,
+          "f1": 0.980392,
+          "false_positive_rate": 0.013333,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 0,
+          "aftermath_alarms": 0,
+          "scenarios": 100,
+          "scenarios_passed": 97,
+          "scenario_pass_rate": 0.97,
+          "scenario_pass_rate_wilson95": [
+            0.9155,
+            0.9897
+          ]
+        },
+        "general": {
+          "normal_points": 875,
+          "false_alarms": 13,
+          "incidents": 20,
+          "detected": 20,
+          "precision": 0.606061,
+          "recall": 1.0,
+          "f1": 0.754717,
+          "false_positive_rate": 0.014857,
+          "event_recall": 1.0,
+          "abrupt_median_delay_ticks": 0.0,
+          "aftermath_points": 305,
+          "aftermath_alarms": 174
+        }
+      },
+      "targets": {
+        "event_recall": true,
+        "false_positive_rate": true,
+        "abrupt_median_delay_ticks": true
+      },
+      "targets_passed": true
+    }
+  },
+  "environment": {
+    "python": "3.12.3",
+    "scikit-learn": "1.6.1",
+    "numpy": "2.5.4",
+    "skops": "0.16.0"
+  }
+}
