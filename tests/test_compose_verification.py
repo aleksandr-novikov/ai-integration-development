@@ -866,5 +866,116 @@ class NetworkProbeTests(unittest.TestCase):
         self.assertNotIn("readiness", self.host.report)
 
 
+class ObservationPhaseTests(unittest.TestCase):
+    """Each phase keeps exactly its own ticks; n_live_tup is never treated as COUNT(*)."""
+
+    start = "2026-11-04T10:00:10.000000+00:00"
+    end = "2026-11-04T10:00:20.000000+00:00"
+    previous = "2026-11-04T10:00:05.000000+00:00"
+    ticks = ("2026-11-04T10:00:11.000000+00:00", "2026-11-04T10:00:13.000000+00:00",
+             "2026-11-04T10:00:15.000000+00:00")
+    late = "2026-11-04T10:00:25.000000+00:00"
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        demo = Path(directory.name) / "models/demo"
+        replacement = patch.object(verify, "DEMO", demo)
+        replacement.start()
+        self.addCleanup(replacement.stop)
+        verify.save(demo / "prepared.json", {"binding": BINDING})
+        verify.save(demo / "adapter.json", {"url": "http://inference:8000"})
+
+    def observe(self, phase, values, score_ts, counts):
+        """Run the real observe() with storage, subprocess, clock and HTTP replaced."""
+        stamps = (self.previous, *self.ticks[:len(values)], self.late)
+        row_counts = [{"ts": ts, "value": value} for ts, value in zip(stamps, (2000, *values, 9999), strict=True)]
+        null_rates = [{"ts": ts, "value": 0.02} for ts in stamps]
+        scores = {ts: {**BINDING, "ts": ts, "score": -0.1 - index / 10, "is_anomaly": index % 2 == 0, "demo": True}
+                  for index, ts in enumerate((self.previous, *score_ts, self.late))}
+        storage = SimpleNamespace(metrics=lambda source, name: row_counts if name == "row_count" else null_rates,
+                                  scores=lambda source, version, schema: [scores[ts] for ts in sorted(scores)])
+
+        class Response:
+            status_code = 200
+
+            def __init__(self, body):
+                self.body = body
+
+            def json(self):
+                return self.body
+
+        class Client:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def post(self, url, json, headers):
+                assert url == "http://inference:8000/v1/predict"
+                row = scores[json["observed_at"]]
+                return Response({**BINDING, "demo": True, "quality_admitted": False, "observed_at": row["ts"],
+                                 "score": row["score"], "is_anomaly": row["is_anomaly"]})
+
+        clock = Mock()
+        clock.now.side_effect = [SimpleNamespace(isoformat=lambda timespec: self.start),
+                                 SimpleNamespace(isoformat=lambda timespec: self.end)]
+        modules = {"app": SimpleNamespace(source_storage=storage),
+                   "httpx": SimpleNamespace(Client=Client),
+                   "scripts.live_demo": SimpleNamespace(_BASE_ROWS_PER_TICK=200, _INCIDENT_ROW_MULTIPLIER=10)}
+        with patch.dict(sys.modules, modules), patch.object(verify, "container_state", return_value=SOURCE), \
+                patch.object(verify, "table_count", side_effect=counts), patch.object(verify, "datetime", clock), \
+                patch.object(verify.subprocess, "run") as run, \
+                patch.dict(os.environ, {"INFERENCE_ADAPTER_TOKEN": "fixture-adapter-token"}):
+            verify.observe(phase)
+        self.command = run.call_args.args[0]
+        return verify.read(verify.DEMO / (phase + ".json"))
+
+    def test_each_normal_tick_maps_to_its_exact_count_inside_the_run_window(self):
+        rows = self.observe("normal", (2200, 2400, 2600), self.ticks, (2000, 2600))
+        self.assertEqual([row["ts"] for row in rows], list(self.ticks))
+        self.assertEqual([row["exact_row_count"] for row in rows], [2200, 2400, 2600])
+        self.assertEqual([row["features"]["row_count"] for row in rows], [2200, 2400, 2600])
+        self.assertEqual(self.command[self.command.index("--ticks") + 1], "3")
+        self.assertNotIn("--incident-at", self.command)
+
+    def test_lagging_estimate_is_kept_beside_the_exact_count_without_changing_phase_or_result(self):
+        rows = self.observe("normal", (2000, 2200, 2400), self.ticks, (2000, 2600))
+        self.assertEqual([row["ts"] for row in rows], list(self.ticks))
+        self.assertEqual([row["features"]["row_count"] for row in rows], [2000, 2200, 2400])
+        self.assertEqual([row["exact_row_count"] for row in rows], [2200, 2400, 2600])
+        self.assertEqual([row["is_anomaly"] for row in rows], [False, True, False])
+
+    def test_incident_is_one_tick_of_ten_batches(self):
+        rows = self.observe("incident", (4600,), self.ticks[:1], (2600, 4600))
+        self.assertEqual([(row["ts"], row["exact_row_count"]) for row in rows], [(self.ticks[0], 4600)])
+        self.assertEqual(self.command[self.command.index("--ticks") + 1:], ["1", "--incident-at", "1"])
+
+    def test_missing_or_uncounted_observations_fail_the_phase(self):
+        cases = {"missing_score": ((2200, 2400, 2600), self.ticks[:2], (2000, 2600)),
+                 "count_mismatch": ((2200, 2400, 2600), self.ticks, (2000, 2400))}
+        for name, (values, score_ts, counts) in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(AssertionError):
+                    self.observe("normal", values, score_ts, counts)
+                self.assertFalse((verify.DEMO / "normal.json").is_file())
+
+    def test_scheduler_collection_inside_the_window_is_not_attributed_to_a_tick(self):
+        extra = "2026-11-04T10:00:16.000000+00:00"
+        self.ticks = (*self.ticks, extra)
+        with self.assertRaises(AssertionError):
+            self.observe("normal", (2200, 2400, 2600, 2600), self.ticks, (2000, 2600))
+        self.assertFalse((verify.DEMO / "normal.json").is_file())
+
+    def test_report_keeps_exact_count_only_as_a_non_negative_integer(self):
+        row = {**ROW, "exact_row_count": 2200}
+        self.assertEqual(verify.public_report({"normal": [row]})["normal"], [row])
+        self.assertNotIn("exact_row_count", verify.public_report({"normal": [{**ROW, "exact_row_count": "2200"}]})["normal"][0])
+
+
 if __name__ == "__main__":
     unittest.main()

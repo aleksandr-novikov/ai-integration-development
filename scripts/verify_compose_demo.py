@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -102,7 +103,7 @@ SOURCE = {"project_id": matches(r"[a-f0-9]{32}"), "connection_id": matches(r"[a-
           "schema_name": choices("public"), "table_name": choices("events")}
 BINDING = {"source": SOURCE, "model_version": matches(r"if-[a-f0-9]{64}"), "feature_schema_version": VERSION}
 DEMO_FLAGS = {"demo": lambda value: value is True, "quality_admitted": lambda value: value is False}
-OBSERVATION = {**BINDING, **DEMO_FLAGS, "ts": STAMP, "score": number, "is_anomaly": BOOL,
+OBSERVATION = {**BINDING, **DEMO_FLAGS, "ts": STAMP, "score": number, "is_anomaly": BOOL, "exact_row_count": count,
                "features": {key: number for key in ("row_count", "null_rate", "d_row_count", "d_null_rate")}}
 TABLE_DIGEST = {"rows": count, "digest": matches(r"[a-f0-9]{32}")}
 SNAPSHOT = {"source": SOURCE, "fernet_decryption": BOOL,
@@ -452,27 +453,54 @@ def prepare():
              "quality_admitted": False, "baseline_fpr": 0.1327, "fernet_key_shared": True})
 
 
+def table_count(source):
+    from sqlalchemy import text
+
+    from app import db
+
+    # Fixed identifiers only: the verified demo source is public.events.
+    assert (source["schema_name"], source["table_name"]) == ("public", "events")
+    with db.get_engine().connect() as conn:
+        return conn.execute(text("SELECT count(*) FROM public.events")).scalar_one()
+
+
 def observe(phase):
     from app import source_storage
     from ml.features import FEATURE_NAMES, build_rows
+    from scripts.live_demo import _BASE_ROWS_PER_TICK, _INCIDENT_ROW_MULTIPLIER
 
     source = container_state()
     binding = read(DEMO / "prepared.json")["binding"]
-    started = datetime.now(UTC).isoformat()
+    # live_demo inserts each batch, then collects and scores that tick once.
+    batches = ([_BASE_ROWS_PER_TICK * _INCIDENT_ROW_MULTIPLIER] if phase == "incident"
+               else [_BASE_ROWS_PER_TICK] * 3)
+    before = table_count(source)
+    # Same canonical form as stored score timestamps, so string order is time order.
+    started = datetime.now(UTC).isoformat(timespec="microseconds")
     command = [sys.executable, "-m", "scripts.live_demo", "--project-id", source["project_id"],
                "--connection-id", source["connection_id"], "--interval", "1",
-               "--ticks", "1" if phase == "incident" else "3"]
+               "--ticks", str(len(batches))]
     if phase == "incident":
         command += ["--incident-at", "1"]
     subprocess.run(command, check=True, timeout=180)
+    finished = datetime.now(UTC).isoformat(timespec="microseconds")
+    exact = list(itertools.accumulate(batches, initial=before))[1:]
+    assert table_count(source) == exact[-1], "inserted rows differ from the phase batches"
     rc, nr = (source_storage.metrics(source, name) for name in ("row_count", "null_rate"))
     stamps, vectors = build_rows(rc, nr)
     features = {stamp: dict(zip(FEATURE_NAMES, vector, strict=True))
                 for stamp, vector in zip(stamps, vectors, strict=True)}
     rows = source_storage.scores(source, binding["model_version"], binding["feature_schema_version"])
     new = [{**row, "features": features[row["ts"]], "quality_admitted": False}
-           for row in rows if row["ts"] >= started]
-    assert new and all(row["demo"] for row in new), "new versioned observations missing"
+           for row in rows if started <= row["ts"] <= finished]
+    # Exactly one score per tick of this run, in tick order. row_count comes from
+    # n_live_tup, an estimate, so the exact COUNT(*) after the tick is stored next
+    # to it instead of being compared with it or used to choose the phase.
+    assert len(new) == len(batches), "phase observations differ from its ticks"
+    assert all(a["ts"] < b["ts"] for a, b in itertools.pairwise(new)), "observations out of order"
+    for row, count in zip(new, exact, strict=True):
+        row["exact_row_count"] = count
+    assert all(row["demo"] for row in new), "new versioned observations missing"
     # Re-run the same selected service on these exact features and compare the
     # response to persisted results; never manufacture is_anomaly from injection.
     import httpx

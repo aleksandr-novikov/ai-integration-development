@@ -103,9 +103,31 @@ _INSERT_SQL = text("""
 """)
 
 
-def _insert_batch(engine, rows: list[dict]) -> None:
+def _stats_flush_supported(engine) -> bool:
+    """The collector reads row_count from pg_stat_user_tables.n_live_tup.
+
+    A backend publishes those statistics at most once per second, so a tick
+    collected right after its insert can see the previous batch. PostgreSQL 15+
+    lets the inserting session request an immediate flush; other dialects and
+    versions, or roles without EXECUTE, keep the previous behaviour.
+    """
+    if engine.dialect.name != "postgresql":
+        return False
+    with engine.connect() as conn:
+        if conn.dialect.server_version_info < (15,):
+            return False
+        return bool(conn.execute(text(
+            "SELECT has_function_privilege('pg_stat_force_next_flush()', 'EXECUTE')"
+        )).scalar())
+
+
+def _insert_batch(engine, rows: list[dict], *, flush_stats: bool = False) -> None:
     with engine.begin() as conn:
         conn.execute(_INSERT_SQL, rows)
+        if flush_stats:
+            # Applies when this session goes idle after COMMIT, before the
+            # server confirms it, so the next collector tick sees this batch.
+            conn.execute(text("SELECT pg_stat_force_next_flush()"))
 
 
 def _run_collector_tick(project_id: str, connection_id: str | None) -> int:
@@ -216,6 +238,7 @@ def main() -> None:
         )
         sys.exit(1)
     logger.info("Loaded %d user_ids for FK-valid inserts", len(user_ids))
+    flush_stats = _stats_flush_supported(engine)
 
     tick = 0
     while args.ticks is None or tick < args.ticks:
@@ -226,7 +249,7 @@ def main() -> None:
             if is_incident else args.rows_per_tick
         )
         rows = [_generate_event_row(user_ids, is_incident) for _ in range(n_rows)]
-        _insert_batch(engine, rows)
+        _insert_batch(engine, rows, flush_stats=flush_stats)
 
         stored_row_count = _run_collector_tick(args.project_id, args.connection_id)
         cp_summary = ""
