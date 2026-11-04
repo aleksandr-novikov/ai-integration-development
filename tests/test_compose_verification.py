@@ -498,6 +498,138 @@ class PrepareDiagnosticsTests(unittest.TestCase):
         self.assertEqual(app["user"], "${APP_UID:-1000}:${APP_GID:-1000}")
         self.assertEqual(compose["services"]["inference"]["volumes"], ["./models:/app/models:ro"])
 
+    def run_demo_fixture(self, checkpoint=None, failed=None):
+        """Real demo orchestrator with isolated, mocked business dependencies."""
+        class DatabaseError(Exception):
+            pass
+
+        error = DatabaseError(self.private)
+        error.orig = SimpleNamespace(pgcode="42703", sqlstate=None, statement=self.private, params=self.private)
+        calls = []
+
+        def operation(stage, result=None):
+            def execute(*args, **kwargs):
+                calls.append(stage)
+                if stage == failed:
+                    raise error
+                return result
+            return Mock(side_effect=execute)
+
+        sqlalchemy = ModuleType("sqlalchemy")
+        sqlalchemy.text = Mock()
+        storage = ModuleType("app.metrics_storage")
+        storage.get_engine = Mock(side_effect=AssertionError("no real database in offline tests"))
+        workspace = ModuleType("scripts.seed_demo_workspace")
+        workspace.seed_demo_workspace = operation("workspace")
+        scripts = ModuleType("scripts")
+        scripts.seed_metrics_db = SimpleNamespace(main=operation("seed_metrics", {"rows": 1}))
+        scripts.warmup_ml = SimpleNamespace(main=operation("warmup_ml", {}))
+        modules = {"sqlalchemy": sqlalchemy, "sqlalchemy.exc": SimpleNamespace(SQLAlchemyError=DatabaseError, DBAPIError=DatabaseError),
+                   "app": ModuleType("app"), "app.metrics_storage": storage,
+                   "scripts": scripts, "scripts.seed_demo_workspace": workspace}
+        path = Path(__file__).resolve().parents[1] / "scripts/demo_prepare.py"
+        demo = ModuleType("fixture_demo_prepare")
+        demo.__file__ = str(path)
+        with patch.dict(sys.modules, modules), patch("builtins.print"), patch("logging.basicConfig"):
+            exec(compile(path.read_text(), str(path), "exec"), demo.__dict__)
+            demo.logger = Mock()
+            demo._resolve_project_ids = operation("resolve_project", {"retail-postgres": "a" * 32})
+            demo.verify_project = operation("verify_project", {"metrics": 1, "anomaly_scores": 1, "changepoints": 0,
+                                                              "drift_reports": 0, "notifications": 0, "forecast_models": 1})
+            # The real outer handler runs while the fake SQLAlchemy types are installed.
+            if checkpoint is None:
+                result = demo.main()
+            else:
+                progress = checkpoint
+                with progress.step("demo_prepare"):
+                    result = demo.main(checkpoint=progress.demo_checkpoint)
+        scripts.seed_metrics_db.main.assert_called_once_with(days=14, interval_minutes=60, reset=True, project_id="a" * 32)
+        scripts.warmup_ml.main.assert_called_once_with(project_id="a" * 32)
+        self.assertEqual(calls, list(verify.DEMO_PREPARE_STAGES))
+        return result
+
+    def demo_progress(self):
+        verify.write_checkpoints({"version": 1, "mount_verified": True, "events": []})
+        progress = verify.PrepareProgress()
+        for stage in ("guard", "imports", "target_seed"):
+            with progress.step(stage):
+                pass
+        return progress
+
+    def test_demo_callbacks_preserve_default_operations_and_report_last_internal_stage(self):
+        self.run_demo_fixture()  # Default entrypoint remains usable without diagnostics.
+        progress = self.demo_progress()
+        self.run_demo_fixture(checkpoint=progress)
+        diagnostics = verify.collect_prepare_diagnostics()
+        self.assertEqual(diagnostics["last_successful_stage"], "demo_prepare")
+        self.assertEqual(diagnostics["demo_prepare_stage"], "verify_project")
+        self.assertIsNone(diagnostics["failed_stage"])
+        self.assertIsNone(diagnostics["sqlstate"])
+        self.assert_private_report(diagnostics)
+
+    def test_demo_failure_reports_each_internal_stage_and_only_allowlisted_sqlstate(self):
+        for stage in verify.DEMO_PREPARE_STAGES:
+            with self.subTest(stage=stage):
+                progress = self.demo_progress()
+                with self.assertRaises(Exception):
+                    self.run_demo_fixture(checkpoint=progress, failed=stage)
+                diagnostics = verify.collect_prepare_diagnostics()
+                self.assertEqual(diagnostics["failed_stage"], "demo_prepare")
+                self.assertEqual(diagnostics["last_successful_stage"], "target_seed")
+                self.assertEqual(diagnostics["demo_prepare_stage"], stage)
+                self.assertEqual(diagnostics["error_type"], "database_error")
+                self.assertEqual(diagnostics["sqlstate"], "42703")
+                self.assert_private_report(diagnostics)
+                self.assertNotIn("fixture", self.path.read_text())
+
+    def test_sqlstate_extraction_ignores_arbitrary_driver_text_and_non_dbapi_errors(self):
+        class DatabaseError(Exception):
+            pass
+
+        with patch.dict(sys.modules, {"sqlalchemy.exc": SimpleNamespace(DBAPIError=DatabaseError)}):
+            for value in (self.private, "ADMIN", "ZZ123", "42703 extra", 42703, None):
+                error = DatabaseError(self.private)
+                error.orig = SimpleNamespace(sqlstate=value, pgcode=value)
+                self.assertIsNone(verify.prepare_sqlstate(error))
+            for field in ("sqlstate", "pgcode"):
+                error = DatabaseError(self.private)
+                error.orig = SimpleNamespace(**{field: "42P01"})
+                self.assertEqual(verify.prepare_sqlstate(error), "42P01")
+            other = RuntimeError(self.private)
+            other.orig = SimpleNamespace(pgcode="42P01")
+            self.assertIsNone(verify.prepare_sqlstate(other))
+
+    def test_internal_stage_and_sqlstate_fields_are_strictly_scoped_and_filtered(self):
+        progress = self.demo_progress()
+        with progress.step("demo_prepare"):
+            progress.demo_checkpoint("workspace")
+        value = verify.read_checkpoints()
+        start, passed = value["events"][-2:]
+        invalid_pairs = [
+            ({**start, "substage": self.private}, passed),
+            ({**start, "sqlstate": "42P01"}, passed),
+            (start, {**passed, "substage": "workspace"}),
+            (start, {"stage": "demo_prepare", "state": "failed", "error_type": "database_error", "sqlstate": self.private}),
+            (start, {"stage": "demo_prepare", "state": "failed", "error_type": "unexpected_error", "sqlstate": "42P01"}),
+        ]
+        for pair in invalid_pairs:
+            self.path.write_text(json.dumps({**value, "events": value["events"][:-2] + list(pair)}))
+            diagnostics = verify.collect_prepare_diagnostics()
+            self.assertEqual(diagnostics["availability"], "invalid")
+            self.assert_private_report(diagnostics)
+        valid = verify.summarize_checkpoints(value)
+        for forged in ({**valid, "sqlstate": self.private}, {**valid, "demo_prepare_stage": self.private}):
+            self.assertEqual(self.assert_private_report(forged), {})
+
+    def test_demo_checkpoint_requires_an_active_demo_stage_and_known_identifier(self):
+        progress = self.demo_progress()
+        with self.assertRaises(ValueError):
+            progress.demo_checkpoint("workspace")
+        with progress.step("demo_prepare"):
+            with self.assertRaises(ValueError):
+                progress.demo_checkpoint(self.private)
+        self.assertNotIn("fixture", self.path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

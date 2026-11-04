@@ -34,6 +34,12 @@ PREPARE_STAGES = ("guard", "imports", "target_seed", "demo_prepare", "summary_ch
 PREPARE_ERRORS = ("import_error", "permission_denied", "file_missing", "database_error",
                   "assertion_failed", "os_error", "invalid_data", "interrupted",
                   "process_exit", "unexpected_error")
+DEMO_PREPARE_STAGES = ("workspace", "resolve_project", "seed_metrics", "warmup_ml", "verify_project")
+# Fixed PostgreSQL codes only, not arbitrary five-character driver strings.
+SQLSTATES = ("08001", "08003", "08006", "28P01", "3D000", "3F000", "42P01", "42703",
+             "42883", "42804", "42P10", "42501", "23502", "23503", "23505", "23514",
+             "22003", "22007", "22008", "22P02", "25P02", "40001", "40P01", "53300",
+             "57014", "0A000", "XX000")
 DIAGNOSTICS_LIMIT = 8192
 
 
@@ -186,7 +192,18 @@ def prepare_error(error):
 def empty_diagnostics(availability, error_type=None):
     return {"availability": availability, "mount_verified": False, "events": [],
             "last_successful_stage": None, "failed_stage": None, "active_stage": None,
-            "error_type": error_type}
+            "error_type": error_type, "demo_prepare_stage": None, "sqlstate": None}
+
+
+def prepare_sqlstate(error):
+    kind = getattr(sys.modules.get("sqlalchemy.exc"), "DBAPIError", ())
+    if not isinstance(error, kind):
+        return None
+    for name in ("sqlstate", "pgcode"):
+        value = getattr(error.orig, name, None)
+        if type(value) is str and value in SQLSTATES:
+            return value
+    return None
 
 
 def summarize_checkpoints(value):
@@ -209,6 +226,16 @@ def summarize_checkpoints(value):
             raise ValueError("invalid preparation sequence")
         status = event.get("state")
         expected = {"stage", "state", "error_type"} if status == "failed" else {"stage", "state"}
+        if "substage" in event:
+            if event["stage"] != "demo_prepare" or status != "started" or not choices(*DEMO_PREPARE_STAGES)(event["substage"]):
+                raise ValueError("invalid preparation substage")
+            expected.add("substage")
+            result["demo_prepare_stage"] = event["substage"]
+        if "sqlstate" in event:
+            if event["stage"] != "demo_prepare" or status != "failed" or event.get("error_type") != "database_error" or not choices(*SQLSTATES)(event["sqlstate"]):
+                raise ValueError("invalid preparation SQLSTATE")
+            expected.add("sqlstate")
+            result["sqlstate"] = event["sqlstate"]
         if set(event) != expected or status not in (("passed", "failed") if active else ("started",)):
             raise ValueError("invalid preparation sequence")
         result["active_stage"] = event["stage"] if status == "started" else None
@@ -311,6 +338,16 @@ class PrepareProgress:
         if not self.value["mount_verified"] or self.value["events"]:
             raise ValueError("preparation exchange must pass preflight first")
 
+    def demo_checkpoint(self, stage):
+        if stage not in DEMO_PREPARE_STAGES or not self.value["events"]:
+            raise ValueError("invalid demo preparation checkpoint")
+        event = self.value["events"][-1]
+        if event["stage"] != "demo_prepare" or event["state"] != "started":
+            raise ValueError("demo preparation is not active")
+        # Overwrite only a fixed phase identifier, never callback arguments/data.
+        event["substage"] = stage
+        write_checkpoints(self.value)
+
     @contextmanager
     def step(self, stage):
         self.value["events"].append({"stage": stage, "state": "started"})
@@ -318,7 +355,12 @@ class PrepareProgress:
         try:
             yield
         except BaseException as error:
-            self.value["events"].append({"stage": stage, "state": "failed", "error_type": prepare_error(error)})
+            failed = {"stage": stage, "state": "failed", "error_type": prepare_error(error)}
+            if stage == "demo_prepare" and failed["error_type"] == "database_error":
+                sqlstate = prepare_sqlstate(error)
+                if sqlstate is not None:
+                    failed["sqlstate"] = sqlstate
+            self.value["events"].append(failed)
             # Preserve the original failure if the exchange became unwritable.
             with suppress(OSError, ValueError):
                 write_checkpoints(self.value)
@@ -382,7 +424,7 @@ def prepare():
     with progress.step("target_seed"):
         seed_target_db.main(n_users=500, n_products=50, n_orders=1000, n_events=2000)
     with progress.step("demo_prepare"):
-        summary = demo_prepare.main()
+        summary = demo_prepare.main(checkpoint=progress.demo_checkpoint)
     with progress.step("summary_check"):
         assert summary["retail-postgres"]["metrics"] > 0
         assert summary["retail-postgres"]["anomaly_scores"] > 0
