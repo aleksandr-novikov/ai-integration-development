@@ -126,6 +126,25 @@ DEMO_MODEL = {
 REPRODUCED = ("train_data_sha256", "test_data_sha256", "scores_sha256", "test")
 OBSERVATION = {**BINDING, **DEMO_FLAGS, "ts": STAMP, "score": number, "is_anomaly": BOOL, "exact_row_count": count,
                "features": {key: number for key in ("row_count", "null_rate", "d_row_count", "d_null_rate")}}
+# A failed observation phase keeps only these fixed categories and integers:
+# no exception text, SQL, feature values, URLs or tokens.
+OBSERVE_PHASES = ("normal", "incident", "after-recreate")
+OBSERVE_CHECKS = ("state", "baseline", "live_demo", "row_total", "history", "window", "order", "demo_flag",
+                  "predecessor", "http_status", "response", "save")
+OBSERVE_ERRORS = ("AssertionError", "CalledProcessError", "TimeoutExpired", "KeyError", "ValueError",
+                  "InvalidHistoryError", "AmbiguousSourceError", "HTTPError", "OperationalError", "other")
+RESPONSE_FIELDS = ("demo", "quality_admitted", "source", "observed_at", "model_version",
+                   "feature_schema_version", "score", "is_anomaly")
+RUN_STATUSES = ("running", "success", "warning", "failed", "skipped")
+OBSERVE_DIAGNOSTICS = {
+    "check": choices(*OBSERVE_CHECKS), "error_type": choices(*OBSERVE_ERRORS),
+    "response_field": choices(*RESPONSE_FIELDS), "http_status": count,
+    "live_demo_exit_code": lambda value: value is None or type(value) is int,
+    "counts": {key: count for key in ("expected_ticks", "rows_before", "rows_after",
+                                      "observations_in_window", "scores_in_window")},
+    "collector_runs": {key: count for key in RUN_STATUSES},
+    "unscored_statuses": [count], "inference": {"healthz": count, "model": count},
+}
 TABLE_DIGEST = {"rows": count, "digest": matches(r"[a-f0-9]{32}")}
 SNAPSHOT = {"source": SOURCE, "fernet_decryption": BOOL,
             "target": {name: TABLE_DIGEST for name in ("users", "products", "orders", "events")},
@@ -156,6 +175,7 @@ REPORT_SCHEMA = {
     "dashboard": DASHBOARD, "dashboard_after_recreate": DASHBOARD,
     "restart_persistence": SNAPSHOT, "recreate_persistence": SNAPSHOT, "cleanup": choices("PASS"),
     "prepare_diagnostics": lambda value: valid_prepare_diagnostics(value),
+    "observe_diagnostics": {phase: OBSERVE_DIAGNOSTICS for phase in OBSERVE_PHASES},
 }
 OMIT = object()
 
@@ -499,16 +519,124 @@ def table_count(source):
 
 
 def observe(phase):
+    """Run one phase; on failure keep only fixed categories and counts beside it."""
+    diagnostics, context = {"check": "state"}, {}
+    try:
+        _observe(phase, diagnostics, context)
+    except BaseException as error:
+        name = type(error).__name__
+        diagnostics["error_type"] = name if name in OBSERVE_ERRORS else "other"
+        if isinstance(error, subprocess.CalledProcessError):
+            diagnostics["live_demo_exit_code"] = error.returncode
+        with suppress(Exception):
+            observe_evidence(context, diagnostics)
+        with suppress(Exception):
+            save(DEMO / (phase + "-diagnostics.json"), public_report(diagnostics, OBSERVE_DIAGNOSTICS))
+        raise
+
+
+def observe_evidence(context, diagnostics):
+    """Independent best-effort probes after a failure; none may hide the original error."""
+    from app import source_storage
+
+    counts = diagnostics.setdefault("counts", {})
+    if "batches" in context:
+        counts["expected_ticks"] = len(context["batches"])
+    if "before" in context:
+        counts["rows_before"] = context["before"]
+    source, binding, started = (context.get(key) for key in ("source", "binding", "started"))
+    if source is None or binding is None or started is None:
+        return
+    with suppress(Exception):
+        counts["rows_after"] = table_count(source)
+    history = {}
+    with suppress(Exception):
+        # Quarantine mode reads past duplicates instead of raising, like score_source.
+        for name in ("row_count", "null_rate"):
+            history[name] = {row["ts"]: row["value"] for row in source_storage.metrics(source, name, quarantine=True)}
+    aligned = sorted(history["row_count"].keys() & history["null_rate"].keys()) if len(history) == 2 else []
+    window = [stamp for stamp in aligned if stamp >= started]
+    if len(history) == 2:
+        counts["observations_in_window"] = len(window)
+    scored = None
+    with suppress(Exception):
+        scored = {row["ts"] for row in source_storage.scores(source, binding["model_version"],
+                                                              binding["feature_schema_version"])}
+        counts["scores_in_window"] = sum(stamp >= started for stamp in scored)
+    with suppress(Exception):
+        diagnostics["collector_runs"] = collector_runs(source, started)
+    with suppress(Exception):
+        inference_evidence(context, diagnostics, aligned, window, scored or set(), history)
+
+
+def collector_runs(source, started):
+    from sqlalchemy import text
+
+    from app import metrics_storage as ms
+
+    with ms.get_engine().connect() as conn:
+        rows = conn.execute(text(
+            "SELECT status, count(*) FROM collector_runs WHERE project_id = :project_id "
+            "AND connection_id = :connection_id AND started_at >= :started GROUP BY status"),
+            {"project_id": source["project_id"], "connection_id": source["connection_id"],
+             "started": started}).fetchall()
+    return {status: int(total) for status, total in rows if status in RUN_STATUSES}
+
+
+def inference_evidence(context, diagnostics, aligned, window, scored, history):
+    """Status codes only: service health, model access and the unscored window pairs.
+
+    0 means no HTTP response (connection refused, DNS or timeout) or no valid pair.
+    """
+    import httpx
+
+    from ml.features import FEATURE_NAMES, build_vector
+
+    source, binding = context["source"], context["binding"]
+    url = read(DEMO / "adapter.json")["url"]
+    headers = {"Authorization": "Bearer " + os.environ["INFERENCE_ADAPTER_TOKEN"]}
+    params = {**source, **{key: binding[key] for key in ("model_version", "feature_schema_version")}}
+
+    def status(method, path, **kwargs):
+        try:
+            return getattr(client, method)(url + path, **kwargs).status_code
+        except httpx.HTTPError:
+            return 0
+
+    with httpx.Client(timeout=20, trust_env=False) as client:
+        diagnostics["inference"] = {"healthz": status("get", "/healthz"),
+                                    "model": status("get", "/v1/model", params=params, headers=headers)}
+        statuses = []
+        for stamp in [stamp for stamp in window if stamp not in scored][:10]:
+            position = aligned.index(stamp)
+            if position == 0:
+                statuses.append(0)  # no predecessor: nothing to request
+                continue
+            previous = aligned[position - 1]
+            try:
+                vector = build_vector(history["row_count"][stamp], history["null_rate"][stamp],
+                                      history["row_count"][previous], history["null_rate"][previous])
+            except ValueError:
+                statuses.append(0)  # quarantined duplicate: no valid pair
+                continue
+            payload = {**binding, "features": dict(zip(FEATURE_NAMES, vector, strict=True)),
+                       "observed_at": stamp, "previous_observed_at": previous}
+            statuses.append(status("post", "/v1/predict", json=payload, headers=headers))
+        diagnostics["unscored_statuses"] = statuses
+
+
+def _observe(phase, diagnostics, context):
     from app import source_storage
     from ml.features import FEATURE_NAMES, build_rows
     from scripts.live_demo import _BASE_ROWS_PER_TICK, _INCIDENT_ROW_MULTIPLIER
 
-    source = container_state()
-    binding = read(DEMO / "prepared.json")["binding"]
+    source = context["source"] = container_state()
+    binding = context["binding"] = read(DEMO / "prepared.json")["binding"]
     # live_demo inserts each batch, then collects and scores that tick once.
-    batches = ([_BASE_ROWS_PER_TICK * _INCIDENT_ROW_MULTIPLIER] if phase == "incident"
-               else [_BASE_ROWS_PER_TICK] * 3)
+    batches = context["batches"] = ([_BASE_ROWS_PER_TICK * _INCIDENT_ROW_MULTIPLIER] if phase == "incident"
+                                    else [_BASE_ROWS_PER_TICK] * 3)
     if phase == "normal":
+        diagnostics["check"] = "baseline"
         # Seeded history is stored without this connection's source key, so the
         # first tick would have no predecessor and no score. One existing
         # collector pass over the unchanged table provides that baseline; a
@@ -518,18 +646,22 @@ def observe(phase):
         collect_for_connection(source["project_id"], source["connection_id"])
         baseline = [{row["ts"] for row in source_storage.metrics(source, name)} for name in ("row_count", "null_rate")]
         assert len(baseline[0]) == 1 and baseline[0] == baseline[1], "baseline observation missing"
-    before = table_count(source)
+    diagnostics["check"] = "row_total"
+    before = context["before"] = table_count(source)
     # Same canonical form as stored score timestamps, so string order is time order.
-    started = datetime.now(UTC).isoformat(timespec="microseconds")
+    started = context["started"] = datetime.now(UTC).isoformat(timespec="microseconds")
     command = [sys.executable, "-m", "scripts.live_demo", "--project-id", source["project_id"],
                "--connection-id", source["connection_id"], "--interval", "1",
                "--ticks", str(len(batches))]
     if phase == "incident":
         command += ["--incident-at", "1"]
+    diagnostics["check"] = "live_demo"
     subprocess.run(command, check=True, timeout=180)
     finished = datetime.now(UTC).isoformat(timespec="microseconds")
     exact = list(itertools.accumulate(batches, initial=before))[1:]
+    diagnostics["check"] = "row_total"
     assert table_count(source) == exact[-1], "inserted rows differ from the phase batches"
+    diagnostics["check"] = "history"
     rc, nr = (source_storage.metrics(source, name) for name in ("row_count", "null_rate"))
     stamps, vectors = build_rows(rc, nr)
     features = {stamp: dict(zip(FEATURE_NAMES, vector, strict=True))
@@ -540,10 +672,13 @@ def observe(phase):
     # Exactly one score per tick of this run, in tick order. row_count comes from
     # n_live_tup, an estimate, so the exact COUNT(*) after the tick is stored next
     # to it instead of being compared with it or used to choose the phase.
+    diagnostics["check"] = "window"
     assert len(new) == len(batches), "phase observations differ from its ticks"
+    diagnostics["check"] = "order"
     assert all(a["ts"] < b["ts"] for a, b in itertools.pairwise(new)), "observations out of order"
     for row, count in zip(new, exact, strict=True):
         row["exact_row_count"] = count
+    diagnostics["check"] = "demo_flag"
     assert all(row["demo"] for row in new), "new versioned observations missing"
     # Re-run the same selected service on these exact features and compare the
     # response to persisted results; never manufacture is_anomaly from injection.
@@ -553,18 +688,29 @@ def observe(phase):
     aligned = sorted({r["ts"] for r in rc} & {r["ts"] for r in nr})
     with httpx.Client(timeout=20, trust_env=False) as client:
         for row in new:
+            diagnostics["check"] = "predecessor"
             position = aligned.index(row["ts"])
             assert position > 0, "observation without a preceding collection"
             payload = {**binding, "features": row["features"], "observed_at": row["ts"],
                        "previous_observed_at": aligned[position - 1]}
+            diagnostics["check"] = "http_status"
             response = client.post(config["url"] + "/v1/predict", json=payload,
                                    headers={"Authorization": "Bearer " + os.environ["INFERENCE_ADAPTER_TOKEN"]})
+            diagnostics["http_status"] = response.status_code
             assert response.status_code == 200
+            diagnostics["check"] = "response"
             actual = response.json()
-            assert actual["demo"] is True and actual["quality_admitted"] is False
-            assert actual["source"] == source and actual["observed_at"] == row["ts"]
-            assert all(actual[key] == binding[key] for key in ("model_version", "feature_schema_version"))
-            assert actual["score"] == row["score"] and actual["is_anomaly"] == row["is_anomaly"]
+            expected = {"demo": True, "quality_admitted": False, "source": source, "observed_at": row["ts"],
+                        **{key: binding[key] for key in ("model_version", "feature_schema_version")},
+                        "score": row["score"], "is_anomaly": row["is_anomaly"]}
+            for field in RESPONSE_FIELDS:
+                diagnostics["response_field"] = field
+                # Identity, not equality, for the two demo flags, as before.
+                same = (actual[field] is expected[field] if field in ("demo", "quality_admitted")
+                        else actual[field] == expected[field])
+                assert same, "service result differs from the stored observation"
+            diagnostics.pop("response_field")
+    diagnostics["check"] = "save"
     save(DEMO / (phase + ".json"), new)
 
 
@@ -682,6 +828,16 @@ class ComposeRun:
         self.compose(label or mode, "run", "--rm", "-T", "--no-deps", "app", "python", "-m",
                      "scripts.verify_compose_demo", "inside-" + mode, timeout=600)
 
+    def observe_probe(self, phase):
+        try:
+            self.probe(phase)
+        finally:
+            # Written by the failed container phase into the shared models mount.
+            path = DEMO / (phase + "-diagnostics.json")
+            if path.is_file():
+                self.report.setdefault("observe_diagnostics", {})[phase] = read(path)
+                save_report(self.report)
+
     def prepare_in_container(self):
         self.stage = "prepare diagnostics preflight"
         try:
@@ -751,7 +907,7 @@ class ComposeRun:
         assert ready.pop("version") == sha
         self.report["readiness"] = ready
         for phase in ("normal", "incident"):
-            self.probe(phase)
+            self.observe_probe(phase)
             self.report[phase] = read(DEMO / (phase + ".json"))
             save_report(self.report)
         self.report["model_scenario"] = outcome(self.report["normal"], self.report["incident"])
@@ -773,7 +929,7 @@ class ComposeRun:
             assert before == after, action + " changed test data/artifact"
             self.report[action + "_persistence"] = after
         self.compose("recreate application and inference", "up", "-d", "--no-build", "--force-recreate", "--wait", "--wait-timeout", "150", "app", "inference")
-        self.probe("after-recreate")
+        self.observe_probe("after-recreate")
         self.report["after_recreate"] = read(DEMO / "after-recreate.json")
         self.probe("dashboard-after-recreate", "dashboard after recreate")
         self.report["dashboard_after_recreate"] = read(DEMO / "dashboard-after-recreate.json")

@@ -34,6 +34,20 @@ Ruff, Python 3.11/3.12/3.13 и обычные integration — SUCCESS; Compose
 | 6 | Секреты не в образе/репозитории; уведомления учебного режима | `.dockerignore`, `.env` 0600, пустые внешние ключи; Telegram только из настроек проекта | Проверка образа в CI; поиск шаблонов секретов в diff; `container_state` требует пустые NIM/Telegram | CI-проверки образа PASS на прежних SHA; локальный поиск — ниже | PASS для репозитория и CI-образа; фактическая доставка Telegram не проверялась и не заявляется |
 | 7 | Протокол запуска другим участником | [Маршрут](README.md), краткое задание и форма ниже | Независимый прогон человеком | Нет | NOT VERIFIED |
 
+CI на HEAD `53b7b825767bfe8d73f6de933a90c612f781509a`
+([run 41858632502](https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/41858632502),
+обезличенный отчёт получен пользователем): Ruff и Python — SUCCESS; Compose —
+подготовка, обучение demo-модели, readiness, normal, incident, dashboard,
+restart/recreate БД с совпадением хэшей и пересоздание app/inference — PASS;
+`demo_model_reproduced` — все четыре сравнения true; `model_scenario.passed=true`
+(3 нормальных тика: score +0.0749, +0.0372, +0.1551, без тревог; инцидент
+−0.0472, обнаружен). `technical_pass=false`: отказ только на `after-recreate`
+(`command_failed`, код 1), его наблюдения не сохранены, `check-outcome` не
+выполнялся. Локальный повтор той же последовательности на PostgreSQL 16 с
+настоящим перезапуском БД и нового процесса FastAPI отказ не воспроизвёл
+(оценка инцидента совпала с CI: −0.04718365). Причина не установлена; добавлена
+диагностика `observe_diagnostics` фиксированными категориями.
+
 Учебный «алерт» — отметка «Да» в колонке аномалии на `/dashboard/inference`
 для новой версионной оценки. Без Telegram-конфигурации проекта
 `_notify_prediction` ничего не отправляет; seed-уведомления demo-prepare —

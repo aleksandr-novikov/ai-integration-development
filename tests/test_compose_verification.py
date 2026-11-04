@@ -903,6 +903,24 @@ class NetworkProbeTests(unittest.TestCase):
         for key in ("readiness", "dashboard", "dashboard_after_recreate"):
             self.assertEqual(public[key], run.report[key])
 
+    def test_failed_observation_probe_adds_its_diagnostics_to_the_report(self):
+        run = object.__new__(verify.ComposeRun)
+        run.report = {"technical_pass": False, "steps": []}
+
+        def failing_probe(mode, label=None):
+            verify.save(verify.DEMO / (mode + "-diagnostics.json"),
+                        {"check": "window", "error_type": "AssertionError", "message": "fixture-private-text"})
+            raise verify.CommandFailure(mode, 1, "command_failed")
+
+        run.probe = failing_probe
+        with self.assertRaises(verify.CommandFailure):
+            run.observe_probe("after-recreate")
+        self.assertEqual(run.report["observe_diagnostics"]["after-recreate"]["check"], "window")
+        content = verify.REPORT.read_text()
+        self.assertNotIn("fixture-private-text", content)
+        self.assertEqual(json.loads(content)["observe_diagnostics"],
+                         {"after-recreate": {"check": "window", "error_type": "AssertionError"}})
+
     def test_host_run_still_requires_the_checked_application_version(self):
         with self.assertRaises(AssertionError) as raised:
             self.host_run(readiness_version="f" * 40)
@@ -932,7 +950,7 @@ class ObservationPhaseTests(unittest.TestCase):
         verify.save(demo / "prepared.json", {"binding": BINDING})
         verify.save(demo / "adapter.json", {"url": "http://inference:8000"})
 
-    def observe(self, phase, values, score_ts, counts, *, baseline=True, prior=None, served=None):
+    def observe(self, phase, values, score_ts, counts, *, baseline=True, prior=None, served=None, live_demo_exit=None):
         """Run the real observe() with storage, collector, subprocess, clock and HTTP replaced.
 
         Seeded history is never part of the source; a normal run starts with no
@@ -958,19 +976,21 @@ class ObservationPhaseTests(unittest.TestCase):
         def live_demo(command, **kwargs):
             for timestamp, value in zip((*self.ticks[:len(values)], self.late), (*values, 9999), strict=True):
                 collect(timestamp, value)
+            if live_demo_exit is not None:
+                raise subprocess.CalledProcessError(live_demo_exit, command)
 
         scored = ((self.previous,) if prior else ()) + (*score_ts, self.late)
         scores = {ts: {**BINDING, "ts": ts, "score": -0.1 - order.index(ts) / 10,
                        "is_anomaly": order.index(ts) % 2 == 0, "demo": True} for ts in scored}
-        storage = SimpleNamespace(metrics=lambda source, name: sorted(row_counts if name == "row_count" else null_rates,
-                                                                       key=lambda row: row["ts"]),
+        storage = SimpleNamespace(metrics=lambda source, name, **kwargs: sorted(
+                                      row_counts if name == "row_count" else null_rates, key=lambda row: row["ts"]),
                                   scores=lambda source, version, schema: [scores[ts] for ts in sorted(scores)])
+        self.requests = []
 
         class Response:
-            status_code = 200
-
-            def __init__(self, body):
+            def __init__(self, body, status_code=200):
                 self.body = body
+                self.status_code = status_code
 
             def json(self):
                 return self.body
@@ -985,13 +1005,21 @@ class ObservationPhaseTests(unittest.TestCase):
             def __exit__(self, *args):
                 return False
 
+            def get(self, url, **kwargs):
+                requests.append(("GET", url))
+                return Response({}, 200)
+
             def post(self, url, json, headers):
                 assert url == "http://inference:8000/v1/predict"
+                requests.append(("POST", json["observed_at"]))
+                if json["observed_at"] not in (served or scores):
+                    return Response({}, 422)
                 row = (served or scores)[json["observed_at"]]
                 self.previous_seen.append(json["previous_observed_at"])
                 return Response({**BINDING, "demo": True, "quality_admitted": False, "observed_at": row["ts"],
                                  "score": row["score"], "is_anomaly": row["is_anomaly"]})
 
+        requests = self.requests
         Client.previous_seen = self.previous_seen = []
         clock = Mock()
         clock.now.side_effect = [SimpleNamespace(isoformat=lambda timespec: self.start),
@@ -1072,6 +1100,89 @@ class ObservationPhaseTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.observe("normal", (2200, 2400, 2600, 2600), self.ticks, (2000, 2600))
         self.assertFalse((verify.DEMO / "normal.json").is_file())
+
+    def diagnostics(self, phase="after-recreate"):
+        path = verify.DEMO / (phase + "-diagnostics.json")
+        content = path.read_text()
+        self.assertNotIn("fixture-adapter-token", content)
+        self.assertNotIn("http://", content)
+        return json.loads(content)
+
+    def test_successful_phase_writes_no_diagnostics(self):
+        self.observe("after-recreate", (2200, 2400, 2600), self.ticks, (2000, 2600))
+        self.assertFalse((verify.DEMO / "after-recreate-diagnostics.json").exists())
+
+    def test_live_demo_failure_is_told_apart_from_observation_checks(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.observe("after-recreate", (2200,), self.ticks[:1], (2000, 2200), live_demo_exit=1)
+        value = self.diagnostics()
+        self.assertEqual((value["check"], value["error_type"], value["live_demo_exit_code"]),
+                         ("live_demo", "CalledProcessError", 1))
+        self.assertEqual({key: value["counts"][key] for key in ("expected_ticks", "rows_before", "rows_after")},
+                         {"expected_ticks": 3, "rows_before": 2000, "rows_after": 2200})
+        self.assertFalse((verify.DEMO / "after-recreate.json").exists())
+
+    def test_unscored_ticks_are_counted_and_rechecked_by_status_code_only(self):
+        with self.assertRaisesRegex(AssertionError, "phase observations differ"):
+            self.observe("after-recreate", (2200, 2400, 2600), self.ticks[:2], (2000, 2600, 2600))
+        value = self.diagnostics()
+        self.assertEqual((value["check"], value["error_type"]), ("window", "AssertionError"))
+        # Three ticks plus the late collection are observed; two ticks and the late one are scored.
+        self.assertEqual(value["counts"], {"expected_ticks": 3, "rows_before": 2000, "rows_after": 2600,
+                                           "observations_in_window": 4, "scores_in_window": 3})
+        self.assertEqual(value["unscored_statuses"], [422])
+        self.assertEqual(value["inference"], {"healthz": 200, "model": 200})
+        self.assertIn(("POST", self.ticks[2]), self.requests)
+        self.assertNotIn("collector_runs", value)  # store unavailable in this fixture: omitted, not invented
+
+    def test_unreachable_inference_is_recorded_as_status_zero(self):
+        class HTTPError(Exception):
+            pass
+
+        class Client:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, url, **kwargs):
+                raise HTTPError
+
+            post = get
+
+        history = {"row_count": {self.previous: 2000, self.ticks[0]: 2200},
+                   "null_rate": {self.previous: 0.02, self.ticks[0]: 0.02}}
+        diagnostics = {}
+        context = {"source": SOURCE, "binding": BINDING}
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=Client, HTTPError=HTTPError)}), \
+                patch.dict(os.environ, {"INFERENCE_ADAPTER_TOKEN": "fixture-adapter-token"}):
+            verify.inference_evidence(context, diagnostics, [self.previous, self.ticks[0]], [self.ticks[0]],
+                                      set(), history)
+        self.assertEqual(diagnostics, {"inference": {"healthz": 0, "model": 0}, "unscored_statuses": [0]})
+
+    def test_service_mismatch_names_only_the_differing_field(self):
+        served = {ts: {**BINDING, "ts": ts, "score": -0.5, "is_anomaly": False} for ts in self.ticks}
+        with self.assertRaises(AssertionError):
+            self.observe("after-recreate", (2200, 2400, 2600), self.ticks, (2000, 2600), served=served)
+        value = self.diagnostics()
+        self.assertEqual((value["check"], value["response_field"], value["http_status"]), ("response", "score", 200))
+
+    def test_diagnostics_reach_the_report_only_through_the_fixed_schema(self):
+        private = "fixture-private-token postgresql://fixture:fixture-password@host/db"
+        value = {"check": "window", "error_type": "AssertionError", "message": private, "http_status": 503,
+                 "response_field": private, "counts": {"scores_in_window": 2, "sql": private, "rows_after": -1},
+                 "collector_runs": {"success": 3, private: 1}, "unscored_statuses": [503, private],
+                 "inference": {"healthz": 200, "model": "503"}, "live_demo_exit_code": "1"}
+        public = verify.public_report({"observe_diagnostics": {"after-recreate": value, "other": value}})
+        self.assertEqual(public["observe_diagnostics"], {"after-recreate": {
+            "check": "window", "error_type": "AssertionError", "http_status": 503,
+            "counts": {"scores_in_window": 2}, "collector_runs": {"success": 3},
+            "unscored_statuses": [503], "inference": {"healthz": 200}}})
+        self.assertNotIn("fixture", json.dumps(public))
 
     def test_report_keeps_exact_count_only_as_a_non_negative_integer(self):
         row = {**ROW, "exact_row_count": 2200}
