@@ -6,6 +6,7 @@ Also runnable without pytest: python3 -m unittest discover -s tests
 
 import base64
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -135,6 +136,17 @@ class ComposeConfigurationTests(unittest.TestCase):
             self.assertEqual(app["depends_on"][name]["condition"], "service_healthy")
             self.assertIn("pg_isready", self.services[name]["healthcheck"]["test"][1])
         self.assertFalse(any("monitor.db" in path for path in app["volumes"]))
+
+    def test_db_healthchecks_wait_for_tcp_not_the_temporary_init_socket(self):
+        for name, database in (("postgres", "monitor"), ("timescaledb", "metrics")):
+            with self.subTest(service=name):
+                kind, command = self.services[name]["healthcheck"]["test"]
+                self.assertEqual(kind, "CMD-SHELL")
+                args = shlex.split(command)
+                self.assertEqual(args[0], "pg_isready")
+                self.assertEqual(args[args.index("-h") + 1], "127.0.0.1")
+                self.assertEqual(args[args.index("-p") + 1], "5432")
+                self.assertEqual(args[args.index("-d") + 1], database)
 
     def test_persistence_and_legacy_profiles_are_preserved(self):
         self.assertIn("pg_data:/var/lib/postgresql", self.services["postgres"]["volumes"])
