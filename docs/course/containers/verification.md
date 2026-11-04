@@ -39,6 +39,26 @@ Ruff, Python 3.11/3.12/3.13 и обычные integration — SUCCESS; Compose
 `_notify_prediction` ничего не отправляет; seed-уведомления demo-prepare —
 синтетические строки, не доказательство доставки.
 
+### Локальные проверки доработки (VDS2, без Docker)
+
+Окружение: Linux, Python 3.12.3; зависимости проекта установлены во временный
+venv вне репозитория из `requirements.txt`/`requirements-dev.txt` (PyPI), без
+sudo. Docker Engine отсутствует, поэтому Compose здесь не запускался.
+
+| Проверка | Результат |
+|---|---|
+| `pytest -q` до изменений, HEAD `104d41b` | 1574 PASS, 6 FAIL: 4 — нет CLI `sqlite3`, 2 — нет `python` в PATH (окружение) |
+| `pytest -q` после изменений, venv в PATH | **1594 PASS**, 4 FAIL — те же тесты `test_backup_restore.py` без CLI `sqlite3`; 54 deselected (integration/e2e) |
+| `tests/test_demo_model.py` | 10 PASS, включая совпадение симулятора с реальными INSERT сидера/live-demo и `MetricsCollector` на SQLite |
+| `tests/test_compose_verification.py`, `tests/test_model_registry.py` | 53 и 49 PASS: этап `demo_model`, схема отчёта, `check-outcome` с целями test, `histories`/`provenance`, неизменный `dataset_id` одной истории |
+| `ruff check .`, `git diff --check`, относительные ссылки документов | PASS |
+| Build context текущего дерева, Docker SDK `exclude_paths` | 151 файл; `scripts/demo_model.py` и контракт OpenAPI включены; env/ключи/модели/архивы/тесты/документы demo-модели исключены |
+| Поиск шаблонов токенов, ключей, DSN с паролем в diff | Совпадений нет (учебные `postgres:dev@localhost`, `demo12345` и тестовые фикстуры известны и допустимы) |
+| Чистый clone `af8bfd0`, `python3 -m scripts.init_compose_demo` | `.env` 0600 из `.env.example`; NIM/Telegram пусты; DSN только `localhost`; Supabase нет; `git status` пуст до и после; повторный вызов — код 2 без перезаписи |
+| Тот же clone, `scripts.demo_model train` | SHA train/test, SHA score и метрики test совпали с [evaluation.json](demo-model/evaluation.json); `evaluation` манифеста пуст |
+
+Это не заменяет Compose CI нового HEAD, браузерную проверку и независимый прогон.
+
 ## Продолжение: Docker-проверка PR #41
 
 На HEAD `ddb29e15941be52301b47646700406ef6f2487fd` получены окончательные
