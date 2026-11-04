@@ -13,9 +13,12 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 import time
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -25,6 +28,13 @@ REPORT = ROOT / "artifacts/compose-demo/ci-report.json"
 STATE = ROOT / ".git/compose-ci-state.json"
 OVERRIDE = ROOT / ".git/compose-ci.json"
 DEMO = ROOT / "models/demo"
+PREPARE_DIAGNOSTICS = ROOT / "models/.compose-diagnostics/prepare.json"
+PREPARE_STAGES = ("guard", "imports", "target_seed", "demo_prepare", "summary_check",
+                  "source_check", "registry_export", "config_write")
+PREPARE_ERRORS = ("import_error", "permission_denied", "file_missing", "database_error",
+                  "assertion_failed", "os_error", "invalid_data", "interrupted",
+                  "process_exit", "unexpected_error")
+DIAGNOSTICS_LIMIT = 8192
 
 
 def save(path, value):
@@ -64,6 +74,7 @@ def boolean(value):
 STAGES = (
     "clean checkout", "checkout SHA", "configuration", "Docker version", "Compose version", "validate configuration",
     "inspect image", "private files absent in image", "database readiness", "seed and warmup",
+    "prepare diagnostics preflight",
     "Flask and FastAPI healthchecks", "app container ID", "app image ID", "inference container ID",
     "inference image ID", "normal", "incident", "stop scheduler before persistence check", "snapshot",
     "restart databases", "restart database readiness", "recreate database readiness",
@@ -111,6 +122,7 @@ REPORT_SCHEMA = {
                        "incident_detected": BOOL, "passed": BOOL},
     "dashboard": DASHBOARD, "dashboard_after_recreate": DASHBOARD,
     "restart_persistence": SNAPSHOT, "recreate_persistence": SNAPSHOT, "cleanup": choices("PASS"),
+    "prepare_diagnostics": lambda value: valid_prepare_diagnostics(value),
 }
 OMIT = object()
 
@@ -158,6 +170,164 @@ def failure_fields(error, stage):
     return {"stage": stage, "exit_code": None, "error_type": category}
 
 
+def prepare_error(error):
+    for kind, category in ((ImportError, "import_error"), (PermissionError, "permission_denied"),
+                           (FileNotFoundError, "file_missing"), (KeyboardInterrupt, "interrupted"),
+                           (SystemExit, "process_exit")):
+        if isinstance(error, kind):
+            return category
+    module = sys.modules.get("sqlalchemy.exc")
+    if module is not None and isinstance(error, module.SQLAlchemyError):
+        return "database_error"
+    category = failure_fields(error, "verification")["error_type"]
+    return category if category in PREPARE_ERRORS else "unexpected_error"
+
+
+def empty_diagnostics(availability, error_type=None):
+    return {"availability": availability, "mount_verified": False, "events": [],
+            "last_successful_stage": None, "failed_stage": None, "active_stage": None,
+            "error_type": error_type}
+
+
+def summarize_checkpoints(value):
+    if type(value) is not dict or set(value) != {"version", "mount_verified", "events"}:
+        raise ValueError("invalid preparation checkpoints")
+    if type(value["version"]) is not int or value["version"] != 1 or type(value["mount_verified"]) is not bool:
+        raise ValueError("invalid preparation checkpoints")
+    events = value["events"]
+    if type(events) is not list or len(events) > 2 * len(PREPARE_STAGES):
+        raise ValueError("invalid preparation checkpoints")
+    result = empty_diagnostics("recorded" if events else "not_started")
+    result.update(mount_verified=value["mount_verified"], events=events)
+    if events and not value["mount_verified"]:
+        raise ValueError("unverified preparation exchange")
+    index, active = 0, False
+    for event in events:
+        if type(event) is not dict or index >= len(PREPARE_STAGES) or result["failed_stage"] is not None:
+            raise ValueError("invalid preparation sequence")
+        if event.get("stage") != PREPARE_STAGES[index]:
+            raise ValueError("invalid preparation sequence")
+        status = event.get("state")
+        expected = {"stage", "state", "error_type"} if status == "failed" else {"stage", "state"}
+        if set(event) != expected or status not in (("passed", "failed") if active else ("started",)):
+            raise ValueError("invalid preparation sequence")
+        result["active_stage"] = event["stage"] if status == "started" else None
+        if status == "failed":
+            if event["error_type"] not in PREPARE_ERRORS:
+                raise ValueError("invalid preparation error category")
+            result.update(failed_stage=event["stage"], error_type=event["error_type"])
+        elif status == "passed":
+            result["last_successful_stage"] = event["stage"]
+            index += 1
+        active = status == "started"
+    return result
+
+
+def valid_prepare_diagnostics(value):
+    if type(value) is not dict or set(value) != set(empty_diagnostics("not_started")):
+        return False
+    if value["availability"] in ("invalid", "unavailable"):
+        return value["error_type"] in PREPARE_ERRORS and value == empty_diagnostics(value["availability"], value["error_type"])
+    try:
+        return value == summarize_checkpoints({"version": 1, "mount_verified": value["mount_verified"], "events": value["events"]})
+    except (ValueError, TypeError):
+        return False
+
+
+def unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate preparation field")
+        result[key] = value
+    return result
+
+
+def read_checkpoints():
+    directory = PREPARE_DIAGNOSTICS.parent
+    if directory.is_symlink() or directory.stat().st_uid != os.geteuid() or directory.stat().st_mode & 0o077:
+        raise ValueError("unsafe preparation exchange directory")
+    fd = os.open(PREPARE_DIAGNOSTICS, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise ValueError("unsafe preparation exchange file")
+        raw = stream.read(DIAGNOSTICS_LIMIT + 1)
+    if len(raw) > DIAGNOSTICS_LIMIT:
+        raise ValueError("preparation checkpoints too large")
+    value = json.loads(raw, object_pairs_hook=unique_fields)
+    summarize_checkpoints(value)
+    return value
+
+
+def write_checkpoints(value):
+    summarize_checkpoints(value)
+    # Read validates the existing private, parent-created destination first.
+    read_checkpoints()
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=PREPARE_DIAGNOSTICS.parent,
+                                         prefix=".prepare-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(value, allow_nan=False))
+        temporary.replace(PREPARE_DIAGNOSTICS)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def create_prepare_exchange():
+    models = ROOT / "models"
+    if models.is_symlink() or not models.is_dir() or models.stat().st_uid != os.geteuid():
+        raise ValueError("unsafe models exchange directory")
+    PREPARE_DIAGNOSTICS.parent.mkdir(mode=0o700)
+    fd = os.open(PREPARE_DIAGNOSTICS, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        json.dump({"version": 1, "mount_verified": False, "events": []}, stream)
+
+
+def prepare_exchange_preflight():
+    if os.environ.get("COMPOSE_DEMO_TEST") != "1" or not Path("/.dockerenv").exists():
+        raise RuntimeError("preparation exchange requires the isolated test container")
+    value = read_checkpoints()
+    if value["events"] or value["mount_verified"]:
+        raise ValueError("preparation exchange is not fresh")
+    value["mount_verified"] = True
+    write_checkpoints(value)
+
+
+def collect_prepare_diagnostics():
+    try:
+        return summarize_checkpoints(read_checkpoints())
+    except OSError as error:
+        return empty_diagnostics("unavailable", prepare_error(error))
+    except (ValueError, TypeError, RecursionError):
+        return empty_diagnostics("invalid", "invalid_data")
+
+
+class PrepareProgress:
+    def __init__(self):
+        self.value = read_checkpoints()
+        if not self.value["mount_verified"] or self.value["events"]:
+            raise ValueError("preparation exchange must pass preflight first")
+
+    @contextmanager
+    def step(self, stage):
+        self.value["events"].append({"stage": stage, "state": "started"})
+        write_checkpoints(self.value)
+        try:
+            yield
+        except BaseException as error:
+            self.value["events"].append({"stage": stage, "state": "failed", "error_type": prepare_error(error)})
+            # Preserve the original failure if the exchange became unwritable.
+            with suppress(OSError, ValueError):
+                write_checkpoints(self.value)
+            raise
+        else:
+            self.value["events"].append({"stage": stage, "state": "passed"})
+            write_checkpoints(self.value)
+
+
 def runner_only():
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_OS") != "Linux":
         raise RuntimeError("run/cleanup require an isolated Linux GitHub Actions runner")
@@ -180,7 +350,8 @@ def outcome(normal, incident):
 def container_state():
     if os.environ.get("COMPOSE_DEMO_TEST") != "1" or not Path("/.dockerenv").exists():
         raise RuntimeError("container probes require the isolated Compose test override")
-    from app import crypto, metrics_storage as ms
+    from app import crypto
+    from app import metrics_storage as ms
     from app.config import settings
 
     assert urlparse(settings.DATABASE_URL).hostname == "postgres"
@@ -198,32 +369,41 @@ def container_state():
 
 
 def prepare():
-    # The guard precedes all writes. No existing database is a permitted target.
-    if os.environ.get("COMPOSE_DEMO_TEST") != "1" or not Path("/.dockerenv").exists():
-        raise RuntimeError("preparation is restricted to the isolated Compose test")
-    from app import metrics_storage as ms
-    from ml.model_registry import stage_export
-    from scripts import demo_prepare, seed_target_db
+    progress = PrepareProgress()
+    with progress.step("guard"):
+        # Only private diagnostics precede the guard; no DB/model writes do.
+        if os.environ.get("COMPOSE_DEMO_TEST") != "1" or not Path("/.dockerenv").exists():
+            raise RuntimeError("preparation is restricted to the isolated Compose test")
+    with progress.step("imports"):
+        from app import metrics_storage as ms
+        from ml.model_registry import stage_export
+        from scripts import demo_prepare, seed_target_db
 
-    seed_target_db.main(n_users=500, n_products=50, n_orders=1000, n_events=2000)
-    summary = demo_prepare.main()
-    assert summary["retail-postgres"]["metrics"] > 0
-    assert summary["retail-postgres"]["anomaly_scores"] > 0
-    assert summary["retail-postgres"]["forecast_models"] > 0
-    source = container_state()
-    for email in ("demo@dbmonitor.app", "lake@dbmonitor.app"):
-        for project in ms.list_projects_for_user(ms.get_user_by_email(email)["id"]):
-            if project["id"] != source["project_id"]:
-                for connection in ms.list_connections_for_project(project["id"]):
-                    ms.set_connection_active(project["id"], connection["id"], False)
-    manifest = stage_export(ROOT / "models/registry", Path("/tmp/mlflow-export.zip"), source=source)
-    binding = {"source": source, **{k: manifest[k] for k in ("model_version", "feature_schema_version")}}
-    save(DEMO / "service.json", {"registry_path": "models/registry", "demo": True,
-         "principals": [{"token_env": "INFERENCE_ADAPTER_TOKEN", "sources": [source]}]})
-    save(DEMO / "adapter.json", {"url": "http://inference:8000", "demo": True,
-         "token_env": "INFERENCE_ADAPTER_TOKEN", "bindings": [binding]})
-    save(DEMO / "prepared.json", {"binding": binding, "warmup": summary, "demo": True,
-         "quality_admitted": False, "baseline_fpr": 0.1327, "fernet_key_shared": True})
+    with progress.step("target_seed"):
+        seed_target_db.main(n_users=500, n_products=50, n_orders=1000, n_events=2000)
+    with progress.step("demo_prepare"):
+        summary = demo_prepare.main()
+    with progress.step("summary_check"):
+        assert summary["retail-postgres"]["metrics"] > 0
+        assert summary["retail-postgres"]["anomaly_scores"] > 0
+        assert summary["retail-postgres"]["forecast_models"] > 0
+    with progress.step("source_check"):
+        source = container_state()
+        for email in ("demo@dbmonitor.app", "lake@dbmonitor.app"):
+            for project in ms.list_projects_for_user(ms.get_user_by_email(email)["id"]):
+                if project["id"] != source["project_id"]:
+                    for connection in ms.list_connections_for_project(project["id"]):
+                        ms.set_connection_active(project["id"], connection["id"], False)
+    with progress.step("registry_export"):
+        manifest = stage_export(ROOT / "models/registry", Path("/tmp/mlflow-export.zip"), source=source)
+    with progress.step("config_write"):
+        binding = {"source": source, **{k: manifest[k] for k in ("model_version", "feature_schema_version")}}
+        save(DEMO / "service.json", {"registry_path": "models/registry", "demo": True,
+             "principals": [{"token_env": "INFERENCE_ADAPTER_TOKEN", "sources": [source]}]})
+        save(DEMO / "adapter.json", {"url": "http://inference:8000", "demo": True,
+             "token_env": "INFERENCE_ADAPTER_TOKEN", "bindings": [binding]})
+        save(DEMO / "prepared.json", {"binding": binding, "warmup": summary, "demo": True,
+             "quality_admitted": False, "baseline_fpr": 0.1327, "fernet_key_shared": True})
 
 
 def observe(phase):
@@ -271,7 +451,8 @@ def observe(phase):
 def snapshot():
     from sqlalchemy import text
 
-    from app import db, metrics_storage as ms
+    from app import db
+    from app import metrics_storage as ms
 
     source = container_state()
     result = {"source": source, "fernet_decryption": True, "target": {}, "store": {}}
@@ -322,6 +503,27 @@ class ComposeRun:
     def probe(self, mode):
         self.compose(mode, "run", "--rm", "-T", "--no-deps", "app", "python", "-m",
                      "scripts.verify_compose_demo", "inside-" + mode, timeout=600)
+
+    def prepare_in_container(self):
+        self.stage = "prepare diagnostics preflight"
+        try:
+            # Existing ./models:/app/models RW bind, same APP_UID/GID on both sides.
+            # A round trip proves visibility and atomic replacement before seeding.
+            create_prepare_exchange()
+            self.compose("prepare diagnostics preflight", "run", "--rm", "-T", "--no-deps",
+                         "app", "python", "-m", "scripts.verify_compose_demo", "inside-prepare-preflight")
+            value = read_checkpoints()
+            assert value["mount_verified"] and not value["events"]
+            self.compose("seed and warmup", "run", "--rm", "-T", "--no-deps", "-v",
+                         str(ROOT / "docs/course/experiments/mlflow-export.zip") + ":/tmp/mlflow-export.zip:ro",
+                         "app", "python", "-m", "scripts.verify_compose_demo", "inside-prepare", timeout=600)
+            diagnostics = collect_prepare_diagnostics()
+            assert diagnostics["last_successful_stage"] == "config_write"
+            assert diagnostics["failed_stage"] is None and diagnostics["active_stage"] is None
+        finally:
+            # Also runs on command failure/timeout, including before the first checkpoint.
+            self.report["prepare_diagnostics"] = collect_prepare_diagnostics()
+            save_report(self.report)
 
     def dashboard(self, rows):
         import httpx
@@ -378,9 +580,7 @@ class ComposeRun:
         check_image = "from pathlib import Path; assert all(not Path('/app', p).exists() for p in ('.env', '.env.local', 'backups', 'models/registry', 'docs/course/experiments')); assert Path('/app/docs/course/api/inference.openapi.yaml').is_file()"
         self.command("private files absent in image", ["docker", "run", "--rm", "--network", "none", image, "python", "-c", check_image])
         self.compose("database readiness", "up", "-d", "--no-build", "--wait", "--wait-timeout", "120", "postgres", "timescaledb")
-        self.compose("seed and warmup", "run", "--rm", "-T", "--no-deps", "-v",
-                     str(ROOT / "docs/course/experiments/mlflow-export.zip") + ":/tmp/mlflow-export.zip:ro",
-                     "app", "python", "-m", "scripts.verify_compose_demo", "inside-prepare", timeout=600)
+        self.prepare_in_container()
         self.report["prepared"] = read(DEMO / "prepared.json")
         self.compose("Flask and FastAPI healthchecks", "up", "-d", "--no-build", "--wait", "--wait-timeout", "150", "inference", "app")
         self.report["serving_image_ids"] = {}
@@ -460,11 +660,13 @@ def cleanup():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("run", "cleanup", "check-outcome", "inside-prepare", "inside-normal", "inside-incident", "inside-after-recreate", "inside-snapshot"))
+    parser.add_argument("mode", choices=("run", "cleanup", "check-outcome", "inside-prepare-preflight", "inside-prepare", "inside-normal", "inside-incident", "inside-after-recreate", "inside-snapshot"))
     mode = parser.parse_args().mode
     if mode.startswith("inside-"):
         action = mode.removeprefix("inside-")
-        if action == "prepare":
+        if action == "prepare-preflight":
+            prepare_exchange_preflight()
+        elif action == "prepare":
             prepare()
         elif action == "snapshot":
             snapshot()
