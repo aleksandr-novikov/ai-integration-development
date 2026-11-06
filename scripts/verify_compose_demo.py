@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -640,6 +640,20 @@ def inference_evidence(context, diagnostics, aligned, window, scored, history):
         diagnostics["unscored_statuses"] = statuses
 
 
+def window_start():
+    """Open a phase window on the next whole second and wait for it.
+
+    Collections store whole-second timestamps (metrics_storage._iso). A window
+    opened mid-second would drop a first tick collected in that second, or let
+    it share a timestamp with the preceding collection. Same canonical form as
+    stored score timestamps, so string order is time order.
+    """
+    now = datetime.now(UTC)
+    boundary = now.replace(microsecond=0) + timedelta(seconds=1)
+    time.sleep((boundary - now).total_seconds())
+    return boundary.isoformat(timespec="microseconds")
+
+
 def _observe(phase, diagnostics, context):
     from app import source_storage
     from ml.features import FEATURE_NAMES, build_rows
@@ -663,8 +677,7 @@ def _observe(phase, diagnostics, context):
         assert len(baseline[0]) == 1 and baseline[0] == baseline[1], "baseline observation missing"
     diagnostics["check"] = "row_total"
     before = context["before"] = table_count(source)
-    # Same canonical form as stored score timestamps, so string order is time order.
-    started = context["started"] = datetime.now(UTC).isoformat(timespec="microseconds")
+    started = context["started"] = window_start()
     command = [sys.executable, "-m", "scripts.live_demo", "--project-id", source["project_id"],
                "--connection-id", source["connection_id"], "--interval", "1",
                "--ticks", str(len(batches))]

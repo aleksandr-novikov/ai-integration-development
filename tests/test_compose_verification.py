@@ -9,12 +9,14 @@ import sys
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 import yaml
 
+from ml.inference_contract import canonical_ts
 from scripts import verify_compose_demo as verify
 
 # Committed offline evaluation, projected onto the report fields it may expose. It
@@ -994,6 +996,7 @@ class ObservationPhaseTests(unittest.TestCase):
     ticks = ("2026-11-04T10:00:11.000000+00:00", "2026-11-04T10:00:13.000000+00:00",
              "2026-11-04T10:00:15.000000+00:00")
     late = "2026-11-04T10:00:25.000000+00:00"
+    stored_ticks = None
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -1029,8 +1032,13 @@ class ObservationPhaseTests(unittest.TestCase):
                 collect(self.baseline, 2000)
 
         def live_demo(command, **kwargs):
+            # Optionally store the ticks where collections after the window wait land.
+            stamps = dict(zip(self.ticks, self.stored_ticks(sum(self.slept)))) if self.stored_ticks else {}
+            renamed = {stamps.get(ts, ts): {**row, "ts": stamps.get(ts, ts)} for ts, row in scores.items()}
+            scores.clear()
+            scores.update(renamed)
             for timestamp, value in zip((*self.ticks[:len(values)], self.late), (*values, 9999), strict=True):
-                collect(timestamp, value)
+                collect(stamps.get(timestamp, timestamp), value)
             if live_demo_exit is not None:
                 raise subprocess.CalledProcessError(live_demo_exit, command)
 
@@ -1077,8 +1085,8 @@ class ObservationPhaseTests(unittest.TestCase):
         requests = self.requests
         Client.previous_seen = self.previous_seen = []
         clock = Mock()
-        clock.now.side_effect = [SimpleNamespace(isoformat=lambda timespec: self.start),
-                                 SimpleNamespace(isoformat=lambda timespec: self.end)]
+        clock.now.side_effect = [datetime.fromisoformat(self.start), datetime.fromisoformat(self.end)]
+        self.slept = []
         modules = {"app": SimpleNamespace(source_storage=storage),
                    "httpx": SimpleNamespace(Client=Client),
                    "collectors.per_project": SimpleNamespace(collect_for_connection=baseline_collection),
@@ -1086,6 +1094,7 @@ class ObservationPhaseTests(unittest.TestCase):
         with patch.dict(sys.modules, modules), patch.object(verify, "container_state", return_value=SOURCE), \
                 patch.object(verify, "table_count", side_effect=counts), patch.object(verify, "datetime", clock), \
                 patch.object(verify.subprocess, "run", side_effect=live_demo) as run, \
+                patch.object(verify.time, "sleep", side_effect=self.slept.append), \
                 patch.dict(os.environ, {"INFERENCE_ADAPTER_TOKEN": "fixture-adapter-token"}):
             self.run = run  # inspected after a refused phase
             verify.observe(phase)
@@ -1099,6 +1108,38 @@ class ObservationPhaseTests(unittest.TestCase):
         self.assertEqual([row["features"]["row_count"] for row in rows], [2200, 2400, 2600])
         self.assertEqual(self.command[self.command.index("--ticks") + 1], "3")
         self.assertNotIn("--incident-at", self.command)
+
+    def test_window_opens_on_the_next_whole_second_after_waiting_for_it(self):
+        for now, opened, waited in (("2026-11-04T10:00:10.600000+00:00", "2026-11-04T10:00:11.000000+00:00", 0.4),
+                                    ("2026-11-04T10:00:10.000000+00:00", "2026-11-04T10:00:11.000000+00:00", 1.0),
+                                    ("2026-11-04T10:00:59.999999+00:00", "2026-11-04T10:01:00.000000+00:00", 1e-06)):
+            with self.subTest(now), patch.object(verify, "datetime", Mock(now=Mock(return_value=datetime.fromisoformat(now)))), \
+                    patch.object(verify.time, "sleep") as sleep:
+                self.assertEqual(verify.window_start(), opened)
+                self.assertAlmostEqual(sleep.call_args.args[0], waited)
+
+    def test_first_tick_in_the_starting_second_stays_inside_the_window(self):
+        # CI run 42239736474: the window opened mid-second and a first tick
+        # collected in that second was stored before it, losing one observation.
+        from app.metrics_storage import _iso
+
+        self.start = "2026-11-04T10:00:10.600000+00:00"
+        self.baseline = "2026-11-04T10:00:10.000000+00:00"  # collected at 10:00:10.2
+
+        def stored_ticks(slept):
+            # live_demo collects 0.35 s after the window opens, then every 2 s;
+            # storage keeps whole seconds only.
+            opened = datetime.fromisoformat(self.start) + timedelta(seconds=slept)
+            return tuple(canonical_ts(_iso(opened + timedelta(seconds=0.35 + 2 * tick))) for tick in range(3))
+
+        self.stored_ticks = stored_ticks
+        rows = self.observe("normal", (2200, 2400, 2600), self.ticks, (2000, 2600))
+        self.assertAlmostEqual(sum(self.slept), 0.4)
+        self.assertEqual([row["ts"] for row in rows], ["2026-11-04T10:00:11.000000+00:00",
+                                                       "2026-11-04T10:00:13.000000+00:00",
+                                                       "2026-11-04T10:00:15.000000+00:00"])
+        self.assertEqual(self.previous_seen[0], self.baseline)
+        self.assertEqual([row["exact_row_count"] for row in rows], [2200, 2400, 2600])
 
     def test_normal_collects_one_unscored_baseline_of_the_source_before_inserting(self):
         rows = self.observe("normal", (2200, 2400, 2600), self.ticks, (2000, 2600))
