@@ -28,10 +28,10 @@ Ruff, Python 3.11/3.12/3.13 и обычные integration — SUCCESS; Compose
 |---|---|---|---|---|---|
 | 1 | Dockerfile и docker-compose.yml | Прежний Dockerfile; Compose с изоляцией, профилем `inference`, readonly-реестром | Compose CI-сценарий на образе `nocache=True` | `technical_pass=true` на `51c0da6`, `104d41b`; для нового HEAD — run из PR | PASS на прежних SHA; новый HEAD — по CI PR |
 | 2 | Сборка проверена при наличии Docker | `tests/integration/test_inference_image.py` с `nocache=True` | integration job | 35 integration PASS на `ddb29e1`; SUCCESS на `104d41b` | PASS на прежних SHA; новый HEAD — по CI PR |
-| 3 | Чистый checkout по инструкции, `.env.example` без Supabase/LLM | `init_compose_demo` строит `.env` из `.env.example`; NIM/Telegram пусты; БД локальные | CI из чистого checkout (`git status` пуст, `.env` отсутствует); локальный clone HEAD + init без Docker | CI `technical_pass`; локальная проверка — ниже | PARTIAL: ручной маршрут человеком и браузер не выполнены |
+| 3 | Чистый checkout по инструкции, `.env.example` без Supabase/LLM | `init_compose_demo` строит `.env` из `.env.example`; NIM/Telegram пусты; БД локальные | CI из чистого checkout (`git status` пуст, `.env` отсутствует); локальный clone HEAD + init без Docker | CI `technical_pass`, integration SUCCESS на `7b068b7`; локальная проверка — ниже | PASS по автоматической проверке (см. «Уточнение статусов №3 и №6»); ручной браузерный прогон по маршруту не выполнен |
 | 4 | Согласованные настройки, readiness, volumes | Раздельные DSN, постоянный FERNET_KEY, healthchecks, restart/recreate | Compose CI: хэши строк и артефакта до/после | PASS на `51c0da6`, `104d41b`; новый HEAD — по CI PR | PASS на прежних SHA |
 | 5 | Seed и прогрев ML; демонстрация | seed + warmup + отдельная demo-модель `contamination_005`; реальный FastAPI-инференс | Независимый test (480 эпизодов); CI `check-outcome` (норма без тревог, инцидент найден, цели test внутри образа, все четыре сравнения `demo_model_reproduced`) | test: FPR 1.66%, recall 1.0, Compose-сценарий 190/200; CI — по PR | Офлайн PASS; CI нового HEAD — по PR |
-| 6 | Секреты не в образе/репозитории; уведомления учебного режима | `.dockerignore`, `.env` 0600, пустые внешние ключи; Telegram только из настроек проекта | Проверка образа в CI; поиск шаблонов секретов в diff; `container_state` требует пустые NIM/Telegram | CI-проверки образа PASS на прежних SHA; локальный поиск — ниже | PASS для репозитория и CI-образа; фактическая доставка Telegram не проверялась и не заявляется |
+| 6 | Секреты не в образе/репозитории; уведомления учебного режима | `.dockerignore`, `.env` 0600, пустые внешние ключи; Telegram только из настроек проекта | Проверка образа в CI; поиск шаблонов секретов в diff; `container_state` требует пустые NIM/Telegram | CI-проверки образа PASS, integration SUCCESS на `7b068b7`; поиск по diff и отслеживаемым файлам — ниже | PASS в установленном объёме (см. «Уточнение статусов №3 и №6»); фактическая доставка Telegram не проверялась и критерием не требуется |
 | 7 | Протокол запуска другим участником | [Маршрут](README.md), краткое задание и форма ниже | Независимый прогон человеком, не участвовавшим в разработке | Нет. Ручное тестирование выполнял участник разработки; оно не считается независимым прогоном другого человека | NOT VERIFIED |
 
 CI на HEAD `53b7b825767bfe8d73f6de933a90c612f781509a`
@@ -95,6 +95,68 @@ sudo. Docker Engine отсутствует, поэтому Compose здесь н
   Хост без AVX-512 физически не проверялся.
 - Алгоритм, конфигурация модели, порог и данные не изменялись. Workflow не
   изменялся.
+
+### Уточнение статусов №3 и №6 (06.11.2026)
+
+Проверяемый HEAD — `7b068b70a7901b9b40ee7f1624de454802b01589`,
+[run 42214390628](https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/42214390628):
+Python 3.11/3.12/3.13 и integration — SUCCESS, E2E — SKIPPED (не PASS);
+[lint](https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/42214390586)
+— SUCCESS. Compose проверяется на дереве `github.sha` (merge-ref PR); база PR —
+`46712fb`. Шаги `run` и `check-outcome` выполняются без условий. Любая
+проверка `run` и `technical_pass=false` завершают job ошибкой. Поэтому
+SUCCESS означает, что все перечисленные ниже утверждения выполнены.
+Артефакт `ci-report.json` этого run здесь не читался.
+Код, тесты, модель и workflow при уточнении не менялись.
+
+**№3 — PASS по автоматической проверке.** Что подтверждено CI:
+
+- перед запуском `.env` отсутствует, `git status --porcelain` пуст, HEAD
+  совпадает с проверяемым SHA;
+- `.env` создаётся только из `.env.example` через `create_environment` —
+  ту же функцию, что вызывает `python3 -m scripts.init_compose_demo` из
+  [маршрута](README.md);
+- стенд работает в сети Compose с `internal: true`, поэтому внешние сервисы
+  недоступны. `container_state` требует, чтобы `DATABASE_URL` и
+  `MONITOR_DB_URL` указывали на сервисы `postgres` и `timescaledb`, а
+  `NIM_API_KEY`, `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID` были пустыми.
+  Личная Supabase и платный LLM не нужны;
+- те же модули, что в маршруте (`seed_target_db`, `demo_prepare`,
+  `demo_model`), подготавливают данные внутри образа. Затем проходят
+  healthchecks Flask и FastAPI, readiness, нормальный тик без тревоги и
+  обнаруженный инцидент.
+
+Граница доказательства: CI — автоматический эквивалент маршрута, а не
+буквальное выполнение команд README. Образ собирает integration-тест с
+`nocache=True`, а не `docker compose build`; подготовка вызывает модули одним
+скриптом. **Не выполнено:** ручной прогон маршрута человеком и браузерная
+проверка входа и `/dashboard/inference`.
+
+**№6 — PASS в установленном объёме.** Что подтверждено:
+
+- образ (CI): в `docker image inspect` нет значений `SECRET_KEY`,
+  `FERNET_KEY` и `INFERENCE_ADAPTER_TOKEN` этого запуска. В `/app` нет
+  `.env`, `.env.local`, `backups`, `models/registry` и
+  `docs/course/experiments`;
+- build context (test jobs): `tests/test_inference_packaging.py` проверяет
+  исключение приватных файлов через Docker SDK `exclude_paths`;
+- репозиторий: `.gitignore` и `.dockerignore` исключают `.env*`, кроме
+  `.env.example`. Из env-, key- и db-подобных файлов отслеживается только
+  `.env.example`. Поиск шаблонов токенов и приватных ключей по diff PR ничего
+  не нашёл. По всем отслеживаемым файлам он нашёл только заведомо фиктивные
+  значения (плейсхолдер в `app/settings.py`, тестовые фикстуры маскирования),
+  которые этот PR не меняет;
+- уведомления: в `.env.example` пустые `NIM_API_KEY` и `TELEGRAM_*`,
+  `FF_LLM_NOTIFICATIONS=0`. Регрессия
+  `test_no_paid_or_external_notifications_by_default` проверяет это
+  значение по умолчанию. Включение возможно только явной настройкой проекта.
+
+**Не проверялось и критерием не требуется:** фактическая доставка в Telegram и
+вызов NIM с реальным ключом. Слои образа целиком не сканировались: проверка
+ограничена метаданными образа и перечисленными путями.
+
+**№7 остаётся NOT VERIFIED.** Автоматические проверки не заменяют
+независимый прогон другим участником.
 
 ## Продолжение: Docker-проверка PR #41
 
@@ -248,5 +310,6 @@ Compose-прогон, перезапуск volumes или новый демон�
 этого шага. Синтетические seed-уведомления не подтверждают детектор/доставку.
 Архивная #9 (FPR 13,27%) не изменялась; demo-модель допускается только с
 `demo=true` и не предназначена для production.
-Итог по #13: **PARTIAL** до независимого прогона и браузерной проверки,
-связь PR — `Refs #13`.
+Итог по #13: **PARTIAL**. Критерии №1–6 подтверждены автоматическими
+проверками; №7 — NOT VERIFIED до независимого прогона. Ручная браузерная
+проверка не выполнена. Связь PR — `Refs #13`.
