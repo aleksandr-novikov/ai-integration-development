@@ -344,12 +344,24 @@ def load_active(root, *, source, demo=False):
 
 
 def train_candidate(
-    root, *, source, row_counts, null_rates, git_sha, seed=42, run_id=None, parameters=None
+    root,
+    *,
+    source,
+    row_counts=None,
+    null_rates=None,
+    git_sha,
+    seed=42,
+    run_id=None,
+    parameters=None,
+    histories=None,
+    provenance=None,
 ):
     """New offline training uses the same build_rows/build_vector as serving.
 
     Training never changes an active pointer. Quality is unevaluated by default.
     Dataset ID hashes the exact input snapshot, scoped to the complete source.
+    ``histories`` lists independent observation runs; vectors never pair the
+    last point of one run with the first point of the next.
     """
     import skops.io as sio
 
@@ -361,9 +373,26 @@ def train_candidate(
         _digest(run_id, 32, "run_id")
     if parameters is not None and not isinstance(parameters, dict):
         raise RegistryError("parameters must be an object")
-    snapshot = {"source": source, "row_counts": row_counts, "null_rates": null_rates}
+    if provenance is not None and not isinstance(provenance, dict):
+        raise RegistryError("provenance must be an object")
+    if histories is None:
+        snapshot = {"source": source, "row_counts": row_counts, "null_rates": null_rates}
+        histories = [{"row_counts": row_counts, "null_rates": null_rates}]
+    elif row_counts is not None or null_rates is not None:
+        raise RegistryError("pass either one history or histories, not both")
+    elif not isinstance(histories, list) or not histories or any(
+        not isinstance(item, dict) or set(item) != {"row_counts", "null_rates"}
+        for item in histories
+    ):
+        raise RegistryError("histories must be a nonempty list of row_counts/null_rates")
+    else:
+        snapshot = {"source": source, "histories": histories}
     data_hash = sha256(canonical(snapshot))
-    _, rows = build_rows(row_counts, null_rates)
+    rows = [
+        row
+        for item in histories
+        for row in build_rows(item["row_counts"], item["null_rates"])[1]
+    ]
     if len(rows) < 200:
         raise RegistryError("at least 200 aligned training vectors are required")
     matrix = np.asarray(
@@ -403,6 +432,10 @@ def train_candidate(
             name: importlib.metadata.version(name) for name in ["scikit-learn", "numpy", "skops"]
         },
     }
+    if "histories" in snapshot:
+        training["n_histories"] = len(histories)
+    if provenance is not None:
+        training["provenance"] = provenance
     return stage_bytes(
         root,
         sio.dumps(pipeline),

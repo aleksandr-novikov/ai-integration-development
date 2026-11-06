@@ -1,4 +1,5 @@
-.env
+.env*
+!.env.example
 venv/
 __pycache__/
 *.pyc
@@ -15,7 +16,7 @@ models/*
 coverage.xml
 htmlcov/
 tests/e2e/_artifacts/
-.env.local
 docker-compose.override.yml
 data/course/
 artifacts/course-experiments/
+artifacts/compose-demo/

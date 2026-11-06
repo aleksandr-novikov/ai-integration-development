@@ -1,5 +1,6 @@
 """Build the actual application image and exercise its packaged ASGI routes."""
 
+import os
 import uuid
 from pathlib import Path
 
@@ -14,7 +15,10 @@ def test_runtime_image_contains_contract_and_serves_routes():
     tag = f"db-monitoring-contract-test:{uuid.uuid4().hex}"
     client = docker.from_env(timeout=1200)
     try:
-        client.images.build(path=str(root), tag=tag, rm=True)
+        built, _ = client.images.build(
+            path=str(root), tag=tag, rm=True, nocache=True,
+            buildargs={"APP_VERSION": os.environ.get("COMPOSE_SMOKE_SHA", "dev")},
+        )
         output = client.containers.run(
             tag,
             [
@@ -27,6 +31,10 @@ from inference.service import create_app
 from ml.inference_contract import CONTRACT_PATH, validator
 assert CONTRACT_PATH.is_file()
 assert not Path('/app/docs/course/experiments').exists()
+assert not Path('/app/.env').exists()
+assert not Path('/app/.env.local').exists()
+assert not Path('/app/backups').exists()
+assert not Path('/app/models/registry').exists()
 validator('PredictionRequest')
 with TestClient(create_app()) as client:
     assert client.get('/healthz').status_code == 200
@@ -42,6 +50,10 @@ print('packaged-routes-ok')
             network_disabled=True,
         )
         assert b"packaged-routes-ok" in output
+        # The optional Compose CI step reuses these exact bytes on this runner.
+        # Normal local integration runs still remove their only test tag.
+        if exported := os.environ.get("COMPOSE_SMOKE_IMAGE"):
+            built.tag(exported)
     finally:
         try:
             client.images.remove(tag)
