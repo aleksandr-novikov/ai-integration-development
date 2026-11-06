@@ -17,9 +17,12 @@ import yaml
 
 from scripts import verify_compose_demo as verify
 
-# Committed offline evaluation, projected onto the report fields it may expose.
-DEMO_EVALUATION = {key: value for key, value in verify.read(verify.DEMO_MODEL_EVIDENCE).items()
-                   if key in verify.DEMO_MODEL}
+# Committed offline evaluation, projected onto the report fields it may expose. It
+# predates the numpy_simd field; its scores belong to the X86_V4 reference.
+_EVIDENCE = verify.read(verify.DEMO_MODEL_EVIDENCE)
+DEMO_EVALUATION = {key: value for key, value in _EVIDENCE.items() if key in verify.DEMO_MODEL}
+DEMO_EVALUATION["environment"] = {**_EVIDENCE["environment"], "numpy_simd": "X86_V4"}
+REPRODUCED_ALL = dict.fromkeys(verify.REPRODUCED, True)
 
 
 class ComposeVerificationTests(unittest.TestCase):
@@ -175,7 +178,8 @@ class ComposeVerificationTests(unittest.TestCase):
         for demo_model, passes in ((DEMO_EVALUATION, True), (failing, False), (None, False)):
             with self.subTest(passes=passes), tempfile.TemporaryDirectory() as temporary:
                 report = Path(temporary) / "report.json"
-                value = {"technical_pass": True, "model_scenario": {"passed": True}, "prepared": {}}
+                value = {"technical_pass": True, "model_scenario": {"passed": True}, "prepared": {},
+                         "demo_model_reproduced": REPRODUCED_ALL}
                 if demo_model is not None:
                     value["prepared"]["demo_model"] = demo_model
                 report.write_text(json.dumps(value))
@@ -192,11 +196,62 @@ class ComposeVerificationTests(unittest.TestCase):
         public = verify.public_report({"prepared": {"demo_model": evidence}})["prepared"]["demo_model"]
         self.assertEqual(public, {key: value for key, value in evidence.items() if key in verify.DEMO_MODEL})
         self.assertTrue(public["test"]["targets_passed"])
-        self.assertEqual(verify.reproduced(evidence), dict.fromkeys(verify.REPRODUCED, True))
-        changed = {**evidence, "scores_sha256": "0" * 64}
+        self.assertEqual(verify.public_report({"prepared": {"demo_model": DEMO_EVALUATION}})
+                         ["prepared"]["demo_model"], DEMO_EVALUATION)
+        self.assertEqual(verify.reproduced(DEMO_EVALUATION), REPRODUCED_ALL)
+        changed = {**DEMO_EVALUATION, "scores_sha256": "0" * 64}
         self.assertFalse(verify.reproduced(changed)["scores_sha256"])
+        # Without a recorded dispatch level no reference applies.
+        self.assertFalse(verify.reproduced(evidence)["scores_sha256"])
+        metrics = copy.deepcopy(DEMO_EVALUATION)
+        metrics["test"]["metrics"]["false_alarms"] += 1
+        self.assertEqual(verify.reproduced(metrics), {**REPRODUCED_ALL, "test": False})
         with self.assertRaisesRegex(AssertionError, "recorded generator"):
             verify.reproduced({**evidence, "test_data_sha256": "0" * 64})
+
+    def test_scores_match_only_the_reference_of_their_numerical_environment(self):
+        references = verify.read(verify.DEMO_SCORE_REFERENCES)
+        historical = references["historical"]["scores_sha256"]
+        # The historical result is kept and remains the reference of its own environment.
+        self.assertEqual(historical, _EVIDENCE["scores_sha256"])
+        self.assertEqual(verify.reference_scores(DEMO_EVALUATION["environment"]), historical)
+        hashes = {entry["scores_sha256"] for entry in references["references"]}
+        self.assertEqual(len(hashes), 2)
+        for entry in references["references"]:
+            with self.subTest(numpy_simd=entry["environment"]["numpy_simd"]):
+                environment = {**entry["environment"], "python": entry["environment"]["python"] + ".16"}
+                actual = {**DEMO_EVALUATION, "environment": environment, "scores_sha256": entry["scores_sha256"]}
+                self.assertEqual(verify.reproduced(actual), REPRODUCED_ALL)
+                for other in hashes - {entry["scores_sha256"]}:
+                    self.assertFalse(verify.reproduced({**actual, "scores_sha256": other})["scores_sha256"])
+        for change in ({"numpy_simd": "other"}, {"numpy": "2.5.5"}, {"scikit-learn": "1.7.0"},
+                       {"skops": "0.17.0"}, {"python": "3.13.1"}):
+            with self.subTest(change=change):
+                environment = {**DEMO_EVALUATION["environment"], **change}
+                self.assertIsNone(verify.reference_scores(environment))
+                self.assertFalse(verify.reproduced({**DEMO_EVALUATION, "environment": environment})["scores_sha256"])
+        without = {key: value for key, value in DEMO_EVALUATION.items() if key != "environment"}
+        self.assertFalse(verify.reproduced(without)["scores_sha256"])
+
+    def test_outcome_command_fails_when_the_demo_model_is_not_reproduced(self):
+        for reproduction, passes in ((REPRODUCED_ALL, True), ({**REPRODUCED_ALL, "scores_sha256": False}, False),
+                                     ({**REPRODUCED_ALL, "test": False}, False),
+                                     ({key: True for key in verify.REPRODUCED if key != "scores_sha256"}, False),
+                                     (None, False)):
+            with self.subTest(reproduction=reproduction), tempfile.TemporaryDirectory() as temporary:
+                report = Path(temporary) / "report.json"
+                value = {"technical_pass": True, "model_scenario": {"passed": True},
+                         "prepared": {"demo_model": DEMO_EVALUATION}}
+                if reproduction is not None:
+                    value["demo_model_reproduced"] = reproduction
+                report.write_text(json.dumps(value))
+                with patch.object(verify, "REPORT", report), \
+                        patch.object(verify.sys, "argv", ["verify", "check-outcome"]), redirect_stdout(io.StringIO()):
+                    if passes:
+                        verify.main()
+                    else:
+                        with self.assertRaisesRegex(SystemExit, "did not reproduce"):
+                            verify.main()
 
     def test_ci_reuses_one_image_and_uploads_only_the_sanitized_report(self):
         job = yaml.safe_load((verify.ROOT / ".github/workflows/tests.yml").read_text())["jobs"]["integration"]
@@ -886,7 +941,7 @@ class NetworkProbeTests(unittest.TestCase):
     def test_host_run_uses_container_probes_and_no_published_host_ports(self):
         run, commands = self.host_run()
         self.assertTrue(run.report["technical_pass"])
-        self.assertEqual(run.report["demo_model_reproduced"], dict.fromkeys(verify.REPRODUCED, True))
+        self.assertEqual(run.report["demo_model_reproduced"], REPRODUCED_ALL)
         self.assertEqual(verify.read(verify.OVERRIDE)["networks"], {"default": {"internal": True}})
         probes = [(label, args[args.index("scripts.verify_compose_demo") + 1]) for label, args in commands
                   if "scripts.verify_compose_demo" in args and label != "prepare diagnostics preflight"]

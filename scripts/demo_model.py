@@ -65,6 +65,7 @@ CONFIGS = {
 # Declared before the test split was generated; see docs/course/containers/demo-model.
 SCENARIO_TARGET = 0.95
 SELECTED = "contamination_005"
+NUMPY_SIMD_LEVELS = ("X86_V4", "X86_V3", "X86_V2")
 SOURCE_FILES = ("scripts/demo_model.py", "scripts/live_demo.py", "scripts/seed_target_db.py",
                 "ml/features.py", "ml/model_registry.py")
 _EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
@@ -297,9 +298,23 @@ def select():
             "environment": _environment()}
 
 
+def numpy_simd():
+    """Highest x86-64 level NumPy dispatches to at run time.
+
+    It changes the last bits of some scores (not the fitted model), so score
+    hashes are comparable only within one level; see RESULTS.md.
+    """
+    import numpy as np
+
+    simd = np.show_config(mode="dicts")["SIMD Extensions"]
+    active = {*simd.get("baseline", []), *simd.get("found", [])}
+    return next((level for level in NUMPY_SIMD_LEVELS if level in active), "other")
+
+
 def _environment():
     return {"python": sys.version.split()[0], **{
-        name: importlib.metadata.version(name) for name in ("scikit-learn", "numpy", "skops")}}
+        name: importlib.metadata.version(name) for name in ("scikit-learn", "numpy", "skops")},
+        "numpy_simd": numpy_simd()}
 
 
 def train_and_evaluate(registry, source, git_sha, *, reference_archive=None):

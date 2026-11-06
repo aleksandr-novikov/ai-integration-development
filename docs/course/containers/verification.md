@@ -30,9 +30,9 @@ Ruff, Python 3.11/3.12/3.13 и обычные integration — SUCCESS; Compose
 | 2 | Сборка проверена при наличии Docker | `tests/integration/test_inference_image.py` с `nocache=True` | integration job | 35 integration PASS на `ddb29e1`; SUCCESS на `104d41b` | PASS на прежних SHA; новый HEAD — по CI PR |
 | 3 | Чистый checkout по инструкции, `.env.example` без Supabase/LLM | `init_compose_demo` строит `.env` из `.env.example`; NIM/Telegram пусты; БД локальные | CI из чистого checkout (`git status` пуст, `.env` отсутствует); локальный clone HEAD + init без Docker | CI `technical_pass`; локальная проверка — ниже | PARTIAL: ручной маршрут человеком и браузер не выполнены |
 | 4 | Согласованные настройки, readiness, volumes | Раздельные DSN, постоянный FERNET_KEY, healthchecks, restart/recreate | Compose CI: хэши строк и артефакта до/после | PASS на `51c0da6`, `104d41b`; новый HEAD — по CI PR | PASS на прежних SHA |
-| 5 | Seed и прогрев ML; демонстрация | seed + warmup + отдельная demo-модель `contamination_005`; реальный FastAPI-инференс | Независимый test (480 эпизодов); CI `check-outcome` (норма без тревог, инцидент найден, цели test внутри образа) | test: FPR 1.66%, recall 1.0, Compose-сценарий 190/200; CI — по PR | Офлайн PASS; CI нового HEAD — по PR |
+| 5 | Seed и прогрев ML; демонстрация | seed + warmup + отдельная demo-модель `contamination_005`; реальный FastAPI-инференс | Независимый test (480 эпизодов); CI `check-outcome` (норма без тревог, инцидент найден, цели test внутри образа, все четыре сравнения `demo_model_reproduced`) | test: FPR 1.66%, recall 1.0, Compose-сценарий 190/200; CI — по PR | Офлайн PASS; CI нового HEAD — по PR |
 | 6 | Секреты не в образе/репозитории; уведомления учебного режима | `.dockerignore`, `.env` 0600, пустые внешние ключи; Telegram только из настроек проекта | Проверка образа в CI; поиск шаблонов секретов в diff; `container_state` требует пустые NIM/Telegram | CI-проверки образа PASS на прежних SHA; локальный поиск — ниже | PASS для репозитория и CI-образа; фактическая доставка Telegram не проверялась и не заявляется |
-| 7 | Протокол запуска другим участником | [Маршрут](README.md), краткое задание и форма ниже | Независимый прогон человеком | Нет | NOT VERIFIED |
+| 7 | Протокол запуска другим участником | [Маршрут](README.md), краткое задание и форма ниже | Независимый прогон человеком, не участвовавшим в разработке | Нет. Ручное тестирование выполнял участник разработки; оно не считается независимым прогоном другого человека | NOT VERIFIED |
 
 CI на HEAD `53b7b825767bfe8d73f6de933a90c612f781509a`
 ([run 41858632502](https://github.com/aleksandr-novikov/ai-integration-development/actions/runs/41858632502),
@@ -72,6 +72,29 @@ sudo. Docker Engine отсутствует, поэтому Compose здесь н
 | Тот же clone, `scripts.demo_model train` | SHA train/test, SHA score и метрики test совпали с [evaluation.json](demo-model/evaluation.json); `evaluation` манифеста пуст |
 
 Это не заменяет Compose CI нового HEAD, браузерную проверку и независимый прогон.
+
+### Доработка 06.11.2026: воспроизводимость score demo-модели
+
+Исходная точка — HEAD PR `1076d63b7f6dce17835c3e24746a80df9782f5e6`.
+Повтор обучения дал SHA score `210f256d…7324` вместо исторического
+`0667678…8346`. При этом данные и метрики совпали. Отчёт записывал
+`demo_model_reproduced.scores_sha256=false`, но `check-outcome` это значение не
+проверял. Сравнение метрик `test` тоже не проверялось.
+
+- `check-outcome` теперь требует все четыре сравнения `true`. Отсутствие
+  сравнения считается ошибкой.
+- SHA score сверяется с эталоном своего окружения из
+  [scores-reference.json](demo-model/scores-reference.json): python 3.12,
+  scikit-learn, numpy, skops и уровень NumPy SIMD (`environment.numpy_simd`).
+  Если для окружения эталона нет, проверка не проходит.
+- Причина расхождения установлена экспериментально: score зависят от уровня
+  SIMD-диспетчеризации NumPy, модель от него не зависит. Подробности — в
+  [RESULTS.md](demo-model/RESULTS.md#воспроизводимость).
+- Исторический SHA сохранён как эталон `X86_V4`. Для `X86_V3`/`X86_V2`
+  добавлен эталон: на каждом уровне выполнено по два независимых обучения.
+  Хост без AVX-512 физически не проверялся.
+- Алгоритм, конфигурация модели, порог и данные не изменялись. Workflow не
+  изменялся.
 
 ## Продолжение: Docker-проверка PR #41
 
@@ -208,11 +231,11 @@ Compose-прогон, перезапуск volumes или новый демон�
 
 | Шаг и команда из [маршрута](README.md) | Ожидается | Фактически / доказательство |
 |---|---|---|
-| Проверяющий, дата, `git rev-parse HEAD`, чистый status | Указан другой участник и полный SHA | Не подтверждено |
+| Проверяющий, дата, `git rev-parse HEAD`, чистый status | Указан другой участник, не участвовавший в разработке, и полный SHA | Не подтверждено |
 | `docker version`, `docker compose version`, список конфликтов, image ID/digest | Engine/Compose доступны; изолированные имена/порты | Не выполнено |
 | `config --quiet`, `build --no-cache app`, import smoke | Код 0; зависимости установлены; OpenAPI в образе | Не выполнено |
 | БД `up --wait`, два `pg_isready` | Обе БД готовы | Не выполнено |
-| seed target, demo-prepare, `scripts.demo_model train` | Данные/история/артефакт; SHA данных и score совпадают с RESULTS.md; `targets_passed=True`; demo остаётся явным | Не выполнено |
+| seed target, demo-prepare, `scripts.demo_model train` | Данные/история/артефакт; SHA данных и метрики test совпадают с RESULTS.md; SHA score совпадает с эталоном своего `numpy_simd`; `targets_passed=True`; demo остаётся явным | Не выполнено |
 | `/v1/model`, `/healthz`, вход в Flask | Артефакт доступен, monitor backend PostgreSQL, сессия работает | Не выполнено |
 | базовый сбор, normal live-demo и SQL | Реальные нормальные метрики и score, `is_anomaly=0` (≈95% показов) | Не выполнено |
 | incident live-demo и SQL | Инъекция 10× пакета; новая оценка выбранного source/версии, `is_anomaly=1`; тик после инцидента записать отдельно | Не выполнено |

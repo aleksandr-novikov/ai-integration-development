@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from scripts.demo_model import CONFIGS, REGIME
+from scripts.demo_model import CONFIGS, NUMPY_SIMD_LEVELS, REGIME
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "artifacts/compose-demo/ci-report.json"
@@ -33,6 +33,9 @@ OVERRIDE = ROOT / ".git/compose-ci.json"
 DEMO = ROOT / "models/demo"
 # Offline result of the same generator/model, committed with the protocol.
 DEMO_MODEL_EVIDENCE = ROOT / "docs/course/containers/demo-model/evaluation.json"
+# Score hashes per numerical environment; the historical one stays first.
+DEMO_SCORE_REFERENCES = ROOT / "docs/course/containers/demo-model/scores-reference.json"
+SCORE_ENVIRONMENT = ("scikit-learn", "numpy", "skops", "numpy_simd")
 PREPARE_DIAGNOSTICS = ROOT / "models/.compose-diagnostics/prepare.json"
 PREPARE_STAGES = ("guard", "imports", "target_seed", "demo_prepare", "summary_check",
                   "source_check", "demo_model", "config_write")
@@ -121,7 +124,8 @@ DEMO_MODEL = {
     "test": {"metrics": QUALITY, "families": {name: QUALITY for name in ("general", "compose", "readme")},
              "targets": {name: BOOL for name in ("event_recall", "false_positive_rate", "abrupt_median_delay_ticks")},
              "targets_passed": BOOL},
-    "environment": {name: VERSION for name in ("python", "scikit-learn", "numpy", "skops")}, **DEMO_FLAGS,
+    "environment": {**{name: VERSION for name in ("python", "scikit-learn", "numpy", "skops")},
+                    "numpy_simd": choices(*NUMPY_SIMD_LEVELS, "other")}, **DEMO_FLAGS,
 }
 REPRODUCED = ("train_data_sha256", "test_data_sha256", "scores_sha256", "test")
 OBSERVATION = {**BINDING, **DEMO_FLAGS, "ts": STAMP, "score": number, "is_anomaly": BOOL, "exact_row_count": count,
@@ -499,12 +503,23 @@ def prepare():
              "demo_model": {key: value for key, value in evaluation.items() if key in DEMO_MODEL}})
 
 
+def reference_scores(environment):
+    """scores_sha256 recorded for this numerical environment, or None if none was recorded."""
+    series = ".".join(str(environment.get("python", "")).split(".")[:2])
+    for entry in read(DEMO_SCORE_REFERENCES)["references"]:
+        expected = entry["environment"]
+        if expected["python"] == series and all(environment.get(key) == expected[key] for key in SCORE_ENVIRONMENT):
+            return entry["scores_sha256"]
+    return None
+
+
 def reproduced(actual):
-    """Same seeds and code must give the committed data; scores also need equal libraries."""
+    """Same seeds and code must give the committed data and metrics; scores also need the same environment."""
     expected = read(DEMO_MODEL_EVIDENCE)
-    result = {key: actual[key] == expected[key] for key in REPRODUCED}
+    result = {key: actual[key] == expected[key] for key in REPRODUCED if key != "scores_sha256"}
     assert result["train_data_sha256"] and result["test_data_sha256"], "demo data differ from the recorded generator"
-    return result
+    result["scores_sha256"] = actual["scores_sha256"] == reference_scores(actual.get("environment", {}))
+    return {key: result[key] for key in REPRODUCED}
 
 
 def table_count(source):
@@ -984,10 +999,14 @@ def main():
         quality = result.get("prepared", {}).get("demo_model", {}).get("test", {})
         print(json.dumps(result.get("model_scenario", {})))
         print(json.dumps({"demo_model_test_targets_passed": quality.get("targets_passed")}))
+        reproduction = result.get("demo_model_reproduced", {})
+        print(json.dumps({"demo_model_reproduced": reproduction}))
         if not result.get("technical_pass") or not result.get("model_scenario", {}).get("passed"):
             raise SystemExit("Actual demo model did not confirm both normal and incident states; no calibration performed")
         if quality.get("targets_passed") is not True:
             raise SystemExit("Demo model did not meet the declared targets on its independent test split")
+        if any(reproduction.get(key) is not True for key in REPRODUCED):
+            raise SystemExit("Demo model did not reproduce the recorded data, test metrics and scores for its environment")
     else:
         run = ComposeRun()
         try:

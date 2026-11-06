@@ -32,7 +32,9 @@ Linux runner: он использует образ, уже собранный im
 выбор данных, порогов и версии ради успешного исхода не выполняется.
 
 Отдельная команда `check-outcome` завершает job ошибкой при ложной тревоге,
-необнаружении или отсутствии результатов, даже если инфраструктура исправна.
+необнаружении, отсутствии результатов или невоспроизведённой demo-модели
+(данные, метрики test или SHA score своего окружения), даже если
+инфраструктура исправна.
 Отчёт различает `technical_pass` и `model_scenario.passed`. В нём сохраняются
 source, timestamp, версии, четыре признака, score/is_anomaly, `demo=true`,
 `quality_admitted=false`. Это не независимое воспроизведение человеком и не
@@ -194,10 +196,14 @@ docker compose run --rm --no-deps app python -m scripts.demo_model train \
 python3 - <<'PY'
 import json
 from pathlib import Path
+from scripts.verify_compose_demo import reference_scores
 actual = json.loads(Path('models/demo/evaluation.json').read_text())
 expected = json.loads(Path('docs/course/containers/demo-model/evaluation.json').read_text())
-for key in ('train_data_sha256', 'test_data_sha256', 'scores_sha256'):
+for key in ('train_data_sha256', 'test_data_sha256', 'test'):
     print(key, 'совпадает' if actual[key] == expected[key] else 'ОТЛИЧАЕТСЯ')
+reference = reference_scores(actual['environment'])
+print('scores_sha256', actual['environment']['numpy_simd'], 'нет эталона для окружения' if reference is None
+      else 'совпадает' if actual['scores_sha256'] == reference else 'ОТЛИЧАЕТСЯ')
 print('цели test:', actual['test']['targets_passed'], actual['test']['metrics']['false_positive_rate'])
 PY
 ```
@@ -207,9 +213,11 @@ PY
 конфигурацию `contamination_005` через `train_candidate` и один раз оценивает
 её на независимом test. Активации и допуска реестра нет: `evaluation` в
 манифест не пишется, версия загружается только с `demo=true`. Ожидаются
-совпадение SHA данных и score с зафиксированным
-[результатом](demo-model/RESULTS.md) и `targets_passed=True`; при
-несовпадении зафиксировать его, не подбирать данные/порог.
+совпадение SHA данных и метрик test с зафиксированным
+[результатом](demo-model/RESULTS.md), совпадение SHA score с эталоном своего
+окружения (уровень NumPy SIMD, [scores-reference.json](demo-model/scores-reference.json))
+и `targets_passed=True`. При несовпадении или отсутствии эталона зафиксировать
+это, не подбирать данные/порог и не заменять эталон результатом одного прогона.
 [Протокол](demo-model/PROTOCOL.md) объясняет, почему архивная модель #9
 (обучена на 56–68 тыс. строк, FPR 13,27%) для стенда не подходит. Она
 сохранена без изменений и может быть импортирована для сравнения командой
@@ -329,7 +337,8 @@ docker compose exec -T timescaledb psql -U postgres -d metrics -c \
 записывается как наблюдение последствий, а не как ложная тревога или
 обнаружение. Порог, модель и данные ради успешного показа не меняются; CI
 `check-outcome` фиксирует фактический результат и дополнительно требует
-выполнения целей test внутри образа. Архивная #9 на этих векторах помечает
+выполнения целей test внутри образа и всех четырёх сравнений
+`demo_model_reproduced`. Архивная #9 на этих векторах помечает
 нормальные тики почти всегда ([сравнение](demo-model/RESULTS.md)).
 
 Войти на `http://127.0.0.1:15001/auth/login` как `demo@dbmonitor.app` с учебным

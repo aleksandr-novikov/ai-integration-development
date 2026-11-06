@@ -208,6 +208,19 @@ def test_train_and_evaluate_uses_the_registry_and_stays_demo_only(tmp_path, monk
         registry.load_version(tmp_path, manifest["model_version"], source=SOURCE)
 
 
+@pytest.mark.parametrize(("baseline", "found", "level"), [
+    (["X86_V2"], ["X86_V3", "X86_V4", "AVX512_ICL"], "X86_V4"),
+    (["X86_V2"], ["X86_V3"], "X86_V3"),
+    (["X86_V2"], [], "X86_V2"),
+    (["NEON", "NEON_FP16"], ["ASIMDHP"], "other"),
+])
+def test_numpy_simd_is_the_highest_active_x86_level(baseline, found, level):
+    config = {"SIMD Extensions": {"baseline": baseline, "found": found, "not found": []}}
+    with patch("numpy.show_config", return_value=config):
+        assert demo_model.numpy_simd() == level
+    assert demo_model._environment()["numpy_simd"] in (*demo_model.NUMPY_SIMD_LEVELS, "other")
+
+
 def test_cli_rejects_an_abbreviated_commit(tmp_path, capsys):
     source = tmp_path / "source.json"
     source.write_text(json.dumps(SOURCE))
