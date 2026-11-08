@@ -466,3 +466,57 @@ def test_reimporting_same_frozen_version_preserves_bytes(tmp_path, archived_cand
         == manifest["model_version"]
     )
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+
+
+def test_independent_histories_are_not_paired_across_runs(tmp_path):
+    first, second = _history(120), _history(110)
+    manifest = registry.train_candidate(
+        tmp_path,
+        source=SOURCE,
+        histories=[
+            {"row_counts": first[0], "null_rates": first[1]},
+            {"row_counts": second[0], "null_rates": second[1]},
+        ],
+        git_sha=GIT_SHA,
+        parameters={"n_estimators": 5},
+        provenance={"regime": "unit-test"},
+    )
+    training = manifest["training"]
+    assert training["n_points"] == 119 + 109
+    assert training["n_histories"] == 2
+    assert training["provenance"] == {"regime": "unit-test"}
+    assert training["dataset_id"] == registry.sha256(registry.canonical({
+        "source": SOURCE,
+        "histories": [
+            {"row_counts": first[0], "null_rates": first[1]},
+            {"row_counts": second[0], "null_rates": second[1]},
+        ],
+    }))
+
+
+def test_single_history_dataset_identity_is_unchanged(local_candidate):
+    _, manifest = local_candidate
+    rc, nr = _history()
+    expected = registry.sha256(
+        registry.canonical({"source": SOURCE, "row_counts": rc, "null_rates": nr})
+    )
+    assert manifest["training"]["dataset_id"] == expected
+    assert "n_histories" not in manifest["training"]
+    assert "provenance" not in manifest["training"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"histories": [], "row_counts": None, "null_rates": None},
+        {"histories": [{"row_counts": []}]},
+        {"histories": [{"row_counts": [], "null_rates": []}], "row_counts": []},
+        {"provenance": "free text"},
+    ],
+)
+def test_invalid_histories_or_provenance_are_rejected(tmp_path, kwargs):
+    rc, nr = _history()
+    arguments = {"row_counts": rc, "null_rates": nr} if "histories" not in kwargs else {}
+    arguments.update(kwargs)
+    with pytest.raises(registry.RegistryError):
+        registry.train_candidate(tmp_path, source=SOURCE, git_sha=GIT_SHA, **arguments)

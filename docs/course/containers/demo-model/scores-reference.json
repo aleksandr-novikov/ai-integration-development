@@ -1,0 +1,63 @@
+{
+  "purpose": "scores_sha256 of the compose-demo-normal/1 test split per numerical environment; data and test metrics are compared with evaluation.json",
+  "regime": "compose-demo-normal/1",
+  "configuration": "contamination_005",
+  "train_data_sha256": "f6708b40721fc7640f927e03e3215cea7ad26596e197d9c07ec88e169230700a",
+  "test_data_sha256": "694cfbd0a11e928927d12186508bd3e6425c18bd7832eb33550c817d3e35ff13",
+  "historical": {
+    "scores_sha256": "0667678455b8a048ebf09c3066527f6910dde700344741a9861bb57225038346",
+    "source": "evaluation.json, test evaluated once after protocol commit 8fb49e5",
+    "environment": {"python": "3.12.3", "scikit-learn": "1.6.1", "numpy": "2.5.4", "skops": "0.16.0", "numpy_simd": "not recorded"},
+    "artifact_sha256": "49673b5fe0d63abd1527b53af6eddd9eeef53497dfa1473e37b9619fc74b357a",
+    "artifact_available": false
+  },
+  "discrepancy": {
+    "reported": "A retraining of the same code produced scores_sha256 210f256d58512f5def1ca6044368c30cb97462a5f970f9d8691920396a9b7324 with equal data hashes and metrics; the environment and SIMD level of that run were not recorded.",
+    "cause": "NumPy runtime CPU dispatch. Disabling the X86_V4 (AVX-512) level on an AVX-512 host reproduces that hash; the fitted model does not depend on the level.",
+    "evidence": {
+      "fitted_parameters_equal_x86_v4_vs_x86_v3": "scaler mean_/scale_, offset_, estimators_features_ and feature/threshold/children/n_node_samples of all 100 trees: 604 comparisons equal",
+      "cross_scoring": "model trained at X86_V3 scored at X86_V4 gives the historical hash; model trained at X86_V4 scored at X86_V3 gives 210f256d...",
+      "scores": 4400,
+      "scores_differing": 213,
+      "max_abs_difference": 1.1102230246251565e-16,
+      "threshold_sign_changes": 0,
+      "min_abs_score": 9.799469155324925e-05
+    }
+  },
+  "conditions": {
+    "host": "VDS2 Linux x86-64 with AVX-512; lower levels via NPY_DISABLE_CPU_FEATURES, not on physical hosts without AVX-512",
+    "code": "PR #41 HEAD 1076d63b7f6dce17835c3e24746a80df9782f5e6 plus the environment.numpy_simd field; generators, model and threshold unchanged",
+    "other_libraries": {"scipy": "1.18.1", "joblib": "1.5.3", "threadpoolctl": "3.8.0"},
+    "recorded_at": "2026-11-06",
+    "not_verified": ["physical host without AVX-512", "AVX512_ICL/AVX512_SPR dispatch", "Python 3.12 patch releases other than 3.12.3 in this rework"]
+  },
+  "references": [
+    {
+      "environment": {"python": "3.12", "scikit-learn": "1.6.1", "numpy": "2.5.4", "skops": "0.16.0", "numpy_simd": "X86_V4"},
+      "scores_sha256": "0667678455b8a048ebf09c3066527f6910dde700344741a9861bb57225038346",
+      "status": "historical; reproduced",
+      "runs": [
+        {"NPY_DISABLE_CPU_FEATURES": null, "python": "3.12.3", "scores_sha256": "0667678455b8a048ebf09c3066527f6910dde700344741a9861bb57225038346"},
+        {"NPY_DISABLE_CPU_FEATURES": null, "python": "3.12.3", "scores_sha256": "0667678455b8a048ebf09c3066527f6910dde700344741a9861bb57225038346"}
+      ]
+    },
+    {
+      "environment": {"python": "3.12", "scikit-learn": "1.6.1", "numpy": "2.5.4", "skops": "0.16.0", "numpy_simd": "X86_V3"},
+      "scores_sha256": "210f256d58512f5def1ca6044368c30cb97462a5f970f9d8691920396a9b7324",
+      "status": "added 2026-11-06",
+      "runs": [
+        {"NPY_DISABLE_CPU_FEATURES": "X86_V4", "python": "3.12.3", "scores_sha256": "210f256d58512f5def1ca6044368c30cb97462a5f970f9d8691920396a9b7324"},
+        {"NPY_DISABLE_CPU_FEATURES": "X86_V4", "python": "3.12.3", "scores_sha256": "210f256d58512f5def1ca6044368c30cb97462a5f970f9d8691920396a9b7324"}
+      ]
+    },
+    {
+      "environment": {"python": "3.12", "scikit-learn": "1.6.1", "numpy": "2.5.4", "skops": "0.16.0", "numpy_simd": "X86_V2"},
+      "scores_sha256": "210f256d58512f5def1ca6044368c30cb97462a5f970f9d8691920396a9b7324",
+      "status": "added 2026-11-06",
+      "runs": [
+        {"NPY_DISABLE_CPU_FEATURES": "X86_V3 X86_V4", "python": "3.12.3", "scores_sha256": "210f256d58512f5def1ca6044368c30cb97462a5f970f9d8691920396a9b7324"},
+        {"NPY_DISABLE_CPU_FEATURES": "X86_V3 X86_V4", "python": "3.12.3", "scores_sha256": "210f256d58512f5def1ca6044368c30cb97462a5f970f9d8691920396a9b7324"}
+      ]
+    }
+  ]
+}

@@ -54,8 +54,18 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      COMPOSE_SMOKE_IMAGE: course13-ci:${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_SMOKE_SHA: ${{ github.sha }}
+      COMPOSE_SMOKE_PR_HEAD: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -74,6 +84,26 @@ jobs:
           SECRET_KEY: test-secret
           DATABASE_URL: postgresql://test:test@localhost/test
         run: pytest -m integration -v --tb=short
+
+      # Reuse the no-cache image built by test_inference_image; no second build.
+      - name: Verify isolated Compose infrastructure and record model observations
+        run: python -m scripts.verify_compose_demo run
+
+      - name: Check actual normal and incident model results
+        run: python -m scripts.verify_compose_demo check-outcome
+
+      - name: Clean up only this runner's isolated Compose project
+        if: always()
+        run: python -m scripts.verify_compose_demo cleanup
+
+      - name: Upload sanitized Compose evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-evidence-${{ github.sha }}
+          path: artifacts/compose-demo/ci-report.json
+          if-no-files-found: warn
+          retention-days: 14
 
   # E2E dashboard tests (#45) — Playwright + headless Chromium drives the
   # live Flask app. Master-only: download + browser-driven flow is slow

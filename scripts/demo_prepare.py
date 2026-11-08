@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from sqlalchemy import text
@@ -45,6 +46,11 @@ logger = logging.getLogger(__name__)
 # реальные тики коллектора после `make seed-clickhouse` etc.
 DEFAULT_SLUGS = ("retail-postgres",)
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+
+
+def _checkpoint(callback: Callable[[str], None] | None, stage: str) -> None:
+    if callback is not None:
+        callback(stage)
 
 
 def _resolve_project_ids(slugs: tuple[str, ...]) -> dict[str, str]:
@@ -114,7 +120,10 @@ def verify_project(project_id: str) -> dict:
     }
 
 
-def prepare_one(project_id: str, *, days: int, interval_minutes: int) -> dict:
+def prepare_one(
+    project_id: str, *, days: int, interval_minutes: int,
+    checkpoint: Callable[[str], None] | None = None,
+) -> dict:
     """Один проход seed_metrics_db + warmup_ml для конкретного project_id.
 
     Не закладываем idempotency через --reset — оператор сам решает. Если
@@ -122,6 +131,7 @@ def prepare_one(project_id: str, *, days: int, interval_minutes: int) -> dict:
     в seed_metrics_db.main (тут вызываем с reset=True по умолчанию — demo
     подготовка обычно чистая).
     """
+    _checkpoint(checkpoint, "seed_metrics")
     from scripts import seed_metrics_db, warmup_ml
 
     logger.info("[%s] seed_metrics_db: %d days × %d min", project_id, days, interval_minutes)
@@ -131,6 +141,7 @@ def prepare_one(project_id: str, *, days: int, interval_minutes: int) -> dict:
         reset=True,
         project_id=project_id,
     )
+    _checkpoint(checkpoint, "warmup_ml")
     logger.info("[%s] warmup_ml", project_id)
     warmup_result = warmup_ml.main(project_id=project_id)
     return {"seed": seed_result, "warmup": warmup_result}
@@ -142,15 +153,18 @@ def main(
     days: int = 14,
     interval_minutes: int = 60,
     skip_workspace: bool = False,
+    checkpoint: Callable[[str], None] | None = None,
 ) -> dict:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+    _checkpoint(checkpoint, "workspace")
     if not skip_workspace:
         from scripts.seed_demo_workspace import seed_demo_workspace
 
         logger.info("Ensuring demo workspace (users / projects / connections)...")
         seed_demo_workspace()
 
+    _checkpoint(checkpoint, "resolve_project")
     resolved = _resolve_project_ids(slugs)
     missing = [s for s in slugs if s not in resolved]
     if missing:
@@ -160,7 +174,8 @@ def main(
     results = {}
     for slug, project_id in resolved.items():
         logger.info("\n=== Preparing %s (project_id=%s) ===", slug, project_id)
-        prepare_one(project_id, days=days, interval_minutes=interval_minutes)
+        prepare_one(project_id, days=days, interval_minutes=interval_minutes, checkpoint=checkpoint)
+        _checkpoint(checkpoint, "verify_project")
         results[slug] = verify_project(project_id)
 
     # Summary table.

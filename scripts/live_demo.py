@@ -45,7 +45,9 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 # Normal event mix matches the seeder so distribution drift only triggers
-# when we explicitly inject an incident, not from baseline noise.
+# when we explicitly inject an incident, not from baseline noise. That
+# includes the seeder's ~20% NULL prev_event_type/prev_event_gap_s: rows
+# without them made every normal tick raise the table-level null_rate.
 _EVENT_TYPES = ["login", "view", "add_to_cart", "checkout", "purchase", "logout"]
 _EVENT_WEIGHTS = [0.15, 0.45, 0.15, 0.10, 0.10, 0.05]
 _SERVER_IDS = ["server-1", "server-2", "server-3"]
@@ -54,6 +56,7 @@ _DEVICE_TYPES = ["mobile", "desktop", "tablet"]
 _BASE_ROWS_PER_TICK = 200
 _INCIDENT_ROW_MULTIPLIER = 10
 _BASE_NULL_RATE = 0.02
+_PREV_EVENT_NULL_RATE = 0.20
 _INCIDENT_NULL_RATE = 0.40
 # Incident also skews server distribution — server-3 dominates traffic,
 # which is what PSI/KS drift detection should pick up on column
@@ -74,11 +77,16 @@ def _fetch_user_ids(engine, limit: int = 500) -> list[str]:
 def _generate_event_row(user_ids: list[str], incident: bool) -> dict:
     null_rate = _INCIDENT_NULL_RATE if incident else _BASE_NULL_RATE
     server_weights = _INCIDENT_SERVER_WEIGHTS if incident else None
+    prev_event = (
+        random.choice(_EVENT_TYPES) if random.random() >= _PREV_EVENT_NULL_RATE else None
+    )
     return {
         "id": str(uuid4()),
         "user_id": random.choice(user_ids),
         "session_id": str(uuid4()),
         "event_type": random.choices(_EVENT_TYPES, weights=_EVENT_WEIGHTS, k=1)[0],
+        "prev_event_type": prev_event,
+        "prev_event_gap_s": round(random.uniform(0.01, 300.0), 3) if prev_event else None,
         "duration_ms": random.randint(50, 5_000),
         "events_in_session": random.randint(1, 30),
         "ip_address": None if random.random() < null_rate else f"10.0.{random.randint(0, 255)}.{random.randint(0, 255)}",
@@ -92,20 +100,44 @@ def _generate_event_row(user_ids: list[str], incident: bool) -> dict:
 
 _INSERT_SQL = text("""
     INSERT INTO events (
-        id, user_id, session_id, event_type, duration_ms, events_in_session,
+        id, user_id, session_id, event_type, prev_event_type, prev_event_gap_s,
+        duration_ms, events_in_session,
         ip_address, ip_events_last_1h, server_id, device_type,
         is_bot_suspected, created_at
     ) VALUES (
-        :id, :user_id, :session_id, :event_type, :duration_ms, :events_in_session,
+        :id, :user_id, :session_id, :event_type, :prev_event_type, :prev_event_gap_s,
+        :duration_ms, :events_in_session,
         :ip_address, :ip_events_last_1h, :server_id, :device_type,
         :is_bot_suspected, :created_at
     )
 """)
 
 
-def _insert_batch(engine, rows: list[dict]) -> None:
+def _stats_flush_supported(engine) -> bool:
+    """The collector reads row_count from pg_stat_user_tables.n_live_tup.
+
+    A backend publishes those statistics at most once per second, so a tick
+    collected right after its insert can see the previous batch. PostgreSQL 15+
+    lets the inserting session request an immediate flush; other dialects and
+    versions, or roles without EXECUTE, keep the previous behaviour.
+    """
+    if engine.dialect.name != "postgresql":
+        return False
+    with engine.connect() as conn:
+        if conn.dialect.server_version_info < (15,):
+            return False
+        return bool(conn.execute(text(
+            "SELECT has_function_privilege('pg_stat_force_next_flush()', 'EXECUTE')"
+        )).scalar())
+
+
+def _insert_batch(engine, rows: list[dict], *, flush_stats: bool = False) -> None:
     with engine.begin() as conn:
         conn.execute(_INSERT_SQL, rows)
+        if flush_stats:
+            # Applies when this session goes idle after COMMIT, before the
+            # server confirms it, so the next collector tick sees this batch.
+            conn.execute(text("SELECT pg_stat_force_next_flush()"))
 
 
 def _run_collector_tick(project_id: str, connection_id: str | None) -> int:
@@ -216,6 +248,7 @@ def main() -> None:
         )
         sys.exit(1)
     logger.info("Loaded %d user_ids for FK-valid inserts", len(user_ids))
+    flush_stats = _stats_flush_supported(engine)
 
     tick = 0
     while args.ticks is None or tick < args.ticks:
@@ -226,7 +259,7 @@ def main() -> None:
             if is_incident else args.rows_per_tick
         )
         rows = [_generate_event_row(user_ids, is_incident) for _ in range(n_rows)]
-        _insert_batch(engine, rows)
+        _insert_batch(engine, rows, flush_stats=flush_stats)
 
         stored_row_count = _run_collector_tick(args.project_id, args.connection_id)
         cp_summary = ""

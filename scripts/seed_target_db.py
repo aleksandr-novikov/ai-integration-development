@@ -20,8 +20,6 @@ from pathlib import Path
 from faker import Faker
 from sqlalchemy import text
 
-from app.db import get_engine
-
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 _CATEGORIES = ["Electronics", "Clothing", "Food", "Books", "Home", "Sports"]
@@ -149,6 +147,28 @@ def _seed_orders(engine, user_ids: list[str], n: int) -> None:
             conn.execute(stmt, chunk)
 
 
+def _event_row(fake: Faker, user_ids: list[str], now: datetime) -> dict:
+    """One seeded event; also replayed offline by scripts.demo_model."""
+    age_days = random.randint(0, 90)
+    null_prob = 0.25 if age_days < 7 else 0.02
+    prev_event = random.choice(_EVENT_TYPES) if random.random() > 0.2 else None
+    return {
+        "user_id": random.choice(user_ids),
+        "session_id": str(uuid.uuid4()),
+        "event_type": random.choice(_EVENT_TYPES),
+        "prev_event_type": prev_event,
+        "prev_event_gap_s": round(random.uniform(0.01, 300.0), 3) if prev_event else None,
+        "duration_ms": random.randint(10, 5000),
+        "events_in_session": random.randint(1, 20),
+        "ip_address": None if random.random() < null_prob else fake.ipv4(),
+        "ip_events_last_1h": random.randint(0, 50),
+        "server_id": random.choice(_SERVER_IDS),
+        "device_type": random.choice(_DEVICE_TYPES),
+        "is_bot_suspected": random.random() < 0.02,
+        "created_at": now - timedelta(days=age_days, seconds=random.randint(0, 86400)),
+    }
+
+
 def _seed_events(engine, fake: Faker, user_ids: list[str], n: int) -> None:
     """ip_address NULL-rate: ~2% for old events, ~25% for last 7 days — simulates logging regression."""
     now = datetime.now(UTC)
@@ -162,26 +182,7 @@ def _seed_events(engine, fake: Faker, user_ids: list[str], n: int) -> None:
              :duration_ms, :events_in_session, :ip_address, :ip_events_last_1h,
              :server_id, :device_type, :is_bot_suspected, :created_at)
     """)
-    rows = []
-    for _ in range(n):
-        age_days = random.randint(0, 90)
-        null_prob = 0.25 if age_days < 7 else 0.02
-        prev_event = random.choice(_EVENT_TYPES) if random.random() > 0.2 else None
-        rows.append({
-            "user_id": random.choice(user_ids),
-            "session_id": str(uuid.uuid4()),
-            "event_type": random.choice(_EVENT_TYPES),
-            "prev_event_type": prev_event,
-            "prev_event_gap_s": round(random.uniform(0.01, 300.0), 3) if prev_event else None,
-            "duration_ms": random.randint(10, 5000),
-            "events_in_session": random.randint(1, 20),
-            "ip_address": None if random.random() < null_prob else fake.ipv4(),
-            "ip_events_last_1h": random.randint(0, 50),
-            "server_id": random.choice(_SERVER_IDS),
-            "device_type": random.choice(_DEVICE_TYPES),
-            "is_bot_suspected": random.random() < 0.02,
-            "created_at": now - timedelta(days=age_days, seconds=random.randint(0, 86400)),
-        })
+    rows = [_event_row(fake, user_ids, now) for _ in range(n)]
     with engine.begin() as conn:
         for chunk in _chunks(rows, 500):
             conn.execute(stmt, chunk)
@@ -197,6 +198,9 @@ def main(
     random.seed(42)
     fake = Faker()
     Faker.seed(42)
+
+    # Imported here so offline row replay (scripts.demo_model) needs no DB settings.
+    from app.db import get_engine
 
     engine = get_engine()
 
