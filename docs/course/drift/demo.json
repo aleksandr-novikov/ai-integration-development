@@ -1,119 +1,348 @@
 {
   "kind": "synthetic-policy-demonstration",
   "seed": 42,
-  "scope": "Independent synthetic marginals; not measured production quality or concept drift",
-  "baseline_points": 1344,
-  "current_window_points": 288,
-  "stable": {
-    "status": "no_signal",
-    "signalled_features": [],
-    "features": {
-      "row_count": {
-        "ks_d": 0.0498511904762,
-        "ks_p_approx": 0.615274448464,
-        "psi": 0.0403842433408,
-        "signal": false
+  "scope": "Synthetic coherent table histories; not measured production quality or concept drift",
+  "reference_vectors": 1344,
+  "current_window_vectors": 288,
+  "history": "row_count = 10000 + cumulative N(5, 2) rows per 15-minute tick; null_rate U(0.015, 0.025)",
+  "normal_growth": {
+    "windows": [
+      {
+        "status": "expected_growth",
+        "signalled_features": [],
+        "features": {
+          "row_count": {
+            "ks_d": 1.0,
+            "ks_p_approx": 1.95958979067e-206,
+            "psi": 8.27453033766,
+            "signal": false,
+            "role": "descriptive; growing level is checked against the trend"
+          },
+          "null_rate": {
+            "ks_d": 0.0587797619048,
+            "ks_p_approx": 0.388380058463,
+            "psi": 0.026335817837,
+            "signal": false
+          },
+          "d_row_count": {
+            "ks_d": 0.062996031746,
+            "ks_p_approx": 0.304427451733,
+            "psi": 0.0589236972474,
+            "signal": false
+          },
+          "d_null_rate": {
+            "ks_d": 0.0342261904762,
+            "ks_p_approx": 1.0,
+            "psi": 0.0154508452746,
+            "signal": false
+          }
+        },
+        "row_count_trend": {
+          "reference_mean_increment": 4.94516700831,
+          "reference_sd_increment": 1.9884851902,
+          "share_outside_band": 0.0,
+          "share_outside_reference_range": 1.0,
+          "trend_break": false,
+          "range_exceeded": true
+        }
       },
-      "null_rate": {
-        "ks_d": 0.0446428571429,
-        "ks_p_approx": 0.777065238038,
-        "psi": 0.0297494665081,
-        "signal": false
-      },
-      "d_row_count": {
-        "ks_d": 0.0404265873016,
-        "ks_p_approx": 0.921187130211,
-        "psi": 0.0428202726358,
-        "signal": false
-      },
-      "d_null_rate": {
-        "ks_d": 0.0538194444444,
-        "ks_p_approx": 0.506195876138,
-        "psi": 0.0365087980877,
-        "signal": false
+      {
+        "status": "expected_growth",
+        "signalled_features": [],
+        "features": {
+          "row_count": {
+            "ks_d": 1.0,
+            "ks_p_approx": 1.95958979067e-206,
+            "psi": 8.27453033766,
+            "signal": false,
+            "role": "descriptive; growing level is checked against the trend"
+          },
+          "null_rate": {
+            "ks_d": 0.0394345238095,
+            "ks_p_approx": 0.95646566957,
+            "psi": 0.0336360640133,
+            "signal": false
+          },
+          "d_row_count": {
+            "ks_d": 0.0530753968254,
+            "ks_p_approx": 0.525658252973,
+            "psi": 0.044912908811,
+            "signal": false
+          },
+          "d_null_rate": {
+            "ks_d": 0.0498511904762,
+            "ks_p_approx": 0.615274448464,
+            "psi": 0.0458358766833,
+            "signal": false
+          }
+        },
+        "row_count_trend": {
+          "reference_mean_increment": 4.94516700831,
+          "reference_sd_increment": 1.9884851902,
+          "share_outside_band": 0.0,
+          "share_outside_reference_range": 1.0,
+          "trend_break": false,
+          "range_exceeded": true
+        }
       }
-    }
+    ],
+    "persistent_features": []
   },
-  "shifted_nonoverlapping_windows": [
-    {
-      "status": "signal",
-      "signalled_features": [
-        "row_count"
-      ],
-      "features": {
-        "row_count": {
-          "ks_d": 1.0,
-          "ks_p_approx": 1.95958979067e-206,
-          "psi": 8.27453033766,
-          "signal": true
+  "level_step_2000_rows": {
+    "windows": [
+      {
+        "status": "signal",
+        "signalled_features": [
+          "row_count"
+        ],
+        "features": {
+          "row_count": {
+            "ks_d": 1.0,
+            "ks_p_approx": 1.95958979067e-206,
+            "psi": 8.27453033766,
+            "signal": false,
+            "role": "descriptive; growing level is checked against the trend"
+          },
+          "null_rate": {
+            "ks_d": 0.0329861111111,
+            "ks_p_approx": 1.0,
+            "psi": 0.00804407383354,
+            "signal": false
+          },
+          "d_row_count": {
+            "ks_d": 0.0438988095238,
+            "ks_p_approx": 0.801731936542,
+            "psi": 0.0538132045208,
+            "signal": false
+          },
+          "d_null_rate": {
+            "ks_d": 0.0438988095238,
+            "ks_p_approx": 0.801731936542,
+            "psi": 0.0294019496501,
+            "signal": false
+          }
         },
-        "null_rate": {
-          "ks_d": 0.0540674603175,
-          "ks_p_approx": 0.499811548482,
-          "psi": 0.0548491807815,
-          "signal": false
+        "row_count_trend": {
+          "reference_mean_increment": 4.91371561256,
+          "reference_sd_increment": 1.98624200664,
+          "share_outside_band": 0.503472222222,
+          "share_outside_reference_range": 1.0,
+          "trend_break": true,
+          "range_exceeded": true
+        }
+      },
+      {
+        "status": "signal",
+        "signalled_features": [
+          "row_count"
+        ],
+        "features": {
+          "row_count": {
+            "ks_d": 1.0,
+            "ks_p_approx": 1.95958979067e-206,
+            "psi": 8.27453033766,
+            "signal": false,
+            "role": "descriptive; growing level is checked against the trend"
+          },
+          "null_rate": {
+            "ks_d": 0.0503472222222,
+            "ks_p_approx": 0.600938337131,
+            "psi": 0.0351642043521,
+            "signal": false
+          },
+          "d_row_count": {
+            "ks_d": 0.0508432539683,
+            "ks_p_approx": 0.586799271632,
+            "psi": 0.0806934656565,
+            "signal": false
+          },
+          "d_null_rate": {
+            "ks_d": 0.0372023809524,
+            "ks_p_approx": 1.0,
+            "psi": 0.0584100545494,
+            "signal": false
+          }
         },
-        "d_row_count": {
-          "ks_d": 0.0582837301587,
-          "ks_p_approx": 0.399226427496,
-          "psi": 0.0202658690538,
-          "signal": false
-        },
-        "d_null_rate": {
-          "ks_d": 0.0610119047619,
-          "ks_p_approx": 0.342114732867,
-          "psi": 0.0396274670386,
-          "signal": false
+        "row_count_trend": {
+          "reference_mean_increment": 4.91371561256,
+          "reference_sd_increment": 1.98624200664,
+          "share_outside_band": 1.0,
+          "share_outside_reference_range": 1.0,
+          "trend_break": true,
+          "range_exceeded": true
         }
       }
-    },
-    {
-      "status": "signal",
-      "signalled_features": [
-        "row_count"
-      ],
-      "features": {
-        "row_count": {
-          "ks_d": 1.0,
-          "ks_p_approx": 1.95958979067e-206,
-          "psi": 8.27453033766,
-          "signal": true
+    ],
+    "persistent_features": [
+      "row_count"
+    ]
+  },
+  "growth_rate_change_to_15": {
+    "windows": [
+      {
+        "status": "signal",
+        "signalled_features": [
+          "row_count",
+          "d_row_count"
+        ],
+        "features": {
+          "row_count": {
+            "ks_d": 1.0,
+            "ks_p_approx": 1.95958979067e-206,
+            "psi": 8.27453033766,
+            "signal": false,
+            "role": "descriptive; growing level is checked against the trend"
+          },
+          "null_rate": {
+            "ks_d": 0.0649801587302,
+            "ks_p_approx": 0.269881945837,
+            "psi": 0.0334769006931,
+            "signal": false
+          },
+          "d_row_count": {
+            "ks_d": 0.99503968254,
+            "ks_p_approx": 2.14207715749e-204,
+            "psi": 8.27453033766,
+            "signal": true
+          },
+          "d_null_rate": {
+            "ks_d": 0.0384424603175,
+            "ks_p_approx": 0.992168437807,
+            "psi": 0.0361568467342,
+            "signal": false
+          }
         },
-        "null_rate": {
-          "ks_d": 0.0364583333333,
-          "ks_p_approx": 1.0,
-          "psi": 0.0527803247736,
-          "signal": false
+        "row_count_trend": {
+          "reference_mean_increment": 4.99056009265,
+          "reference_sd_increment": 1.98012967583,
+          "share_outside_band": 1.0,
+          "share_outside_reference_range": 1.0,
+          "trend_break": true,
+          "range_exceeded": true
+        }
+      },
+      {
+        "status": "signal",
+        "signalled_features": [
+          "row_count",
+          "d_row_count"
+        ],
+        "features": {
+          "row_count": {
+            "ks_d": 1.0,
+            "ks_p_approx": 1.95958979067e-206,
+            "psi": 8.27453033766,
+            "signal": false,
+            "role": "descriptive; growing level is checked against the trend"
+          },
+          "null_rate": {
+            "ks_d": 0.046875,
+            "ks_p_approx": 0.705299861453,
+            "psi": 0.0249178382905,
+            "signal": false
+          },
+          "d_row_count": {
+            "ks_d": 0.992063492063,
+            "ks_p_approx": 3.54136777087e-203,
+            "psi": 8.27453033766,
+            "signal": true
+          },
+          "d_null_rate": {
+            "ks_d": 0.0498511904762,
+            "ks_p_approx": 0.615274448464,
+            "psi": 0.0215349565274,
+            "signal": false
+          }
         },
-        "d_row_count": {
-          "ks_d": 0.0458829365079,
-          "ks_p_approx": 0.73676858093,
-          "psi": 0.0202008194863,
-          "signal": false
-        },
-        "d_null_rate": {
-          "ks_d": 0.046875,
-          "ks_p_approx": 0.705299861453,
-          "psi": 0.0276207220789,
-          "signal": false
+        "row_count_trend": {
+          "reference_mean_increment": 4.99056009265,
+          "reference_sd_increment": 1.98012967583,
+          "share_outside_band": 1.0,
+          "share_outside_reference_range": 1.0,
+          "trend_break": true,
+          "range_exceeded": true
         }
       }
-    }
-  ],
-  "persistent_features": [
-    "row_count"
-  ],
+    ],
+    "persistent_features": [
+      "d_row_count",
+      "row_count"
+    ]
+  },
   "below_minimum": {
     "status": "insufficient_data",
-    "signalled_features": [],
-    "features": {}
+    "window": "current",
+    "valid_vectors": 199,
+    "expected_vectors": 288,
+    "invalid_vectors": {
+      "nonfinite": 0,
+      "out_of_bounds": 0
+    }
   },
-  "below_coverage": {
+  "collection_gap_68_ticks": {
     "status": "insufficient_data",
-    "signalled_features": [],
-    "features": {}
+    "window": "current",
+    "valid_vectors": 219,
+    "expected_vectors": 288,
+    "invalid_vectors": {
+      "nonfinite": 0,
+      "out_of_bounds": 0
+    }
   },
-  "decision": "investigate_and_request_verified_labels; no automatic retraining",
+  "invalid_values": {
+    "nan_row_count": {
+      "status": "invalid_data",
+      "window": "current",
+      "invalid_vectors": {
+        "nonfinite": 2,
+        "out_of_bounds": 0
+      }
+    },
+    "positive_infinity_null_rate": {
+      "status": "invalid_data",
+      "window": "current",
+      "invalid_vectors": {
+        "nonfinite": 2,
+        "out_of_bounds": 0
+      }
+    },
+    "negative_infinity_row_count": {
+      "status": "invalid_data",
+      "window": "current",
+      "invalid_vectors": {
+        "nonfinite": 2,
+        "out_of_bounds": 0
+      }
+    },
+    "nan_leaves_too_few_valid": {
+      "status": "insufficient_data",
+      "window": "current",
+      "valid_vectors": 227,
+      "expected_vectors": 288,
+      "invalid_vectors": {
+        "nonfinite": 61,
+        "out_of_bounds": 0
+      }
+    }
+  },
+  "seed_sweep_1000_1199": {
+    "normal_growth": {
+      "seeds": 200,
+      "any_window_signal": 6,
+      "persistent_signal": 0
+    },
+    "level_step_2000_rows": {
+      "seeds": 200,
+      "any_window_signal": 200,
+      "persistent_signal": 200
+    },
+    "growth_rate_change_to_15": {
+      "seeds": 200,
+      "any_window_signal": 200,
+      "persistent_signal": 200
+    }
+  },
+  "decision": "expected_growth -> verified candidate refresh; signal -> investigation; no automatic retraining",
   "model_trained": false,
   "active_model_changed": false
 }
