@@ -1,23 +1,36 @@
 {
-  "checked_on": "2026-10-25",
-  "base_commit": "6ffaa6b",
-  "python": "3.12.14",
-  "numpy": "2.5.3",
+  "checked_on": "2026-11-08",
+  "pr_head_before_rework": "4d539b1",
+  "pr_base_commit": "6ffaa6b",
+  "master_compatibility": {
+    "master_commit": "aed9a6b",
+    "merge": "temporary local merge of the rework commit into master: no conflicts",
+    "profile_tests_on_merge": "42 passed",
+    "demo_json_on_merge_byte_identical": true,
+    "full_default_suite_on_merge": "1621 passed, 6 failed, 54 deselected; failures are environment-only: 2 need a `python` executable on PATH (70 passed in their files with the venv on PATH), 4 backup tests need the sqlite3 CLI, which is absent; none of these files are changed"
+  },
+  "python": "3.12.3",
+  "numpy": "2.5.4",
   "scenario": {
-    "command": "python -m scripts.check_drift_strategy",
-    "result": "PASS; stable no_signal, two shifted windows signal row_count, inadequate minimum/coverage insufficient_data",
+    "command": "DATABASE_URL=sqlite:////tmp/drift-unused.db python -m scripts.check_drift_strategy",
+    "result": "PASS; normal growth expected_growth without persistent signal; level step persistent row_count; growth-rate change persistent d_row_count and row_count; below minimum, collection gap and NaN-reduced window insufficient_data; NaN, +Infinity, -Infinity invalid_data",
+    "seed_sweep_1000_1199": "normal growth: 6/200 single-window signals, 0/200 persistent; level step and growth-rate change: 200/200 persistent",
     "repeated_output_byte_identical": true,
     "production_policy_changed": false,
     "model_training_performed": false
   },
+  "regression": {
+    "previous_script_4d539b1": "one NaN or +/-Infinity value in null_rate, d_row_count or d_null_rate (or +/-Infinity in row_count) returned no_signal",
+    "current": "the same inputs return invalid_data; tests/test_drift_strategy.py covers NaN, +Infinity, -Infinity, out-of-bounds values and sufficiency counted after validation"
+  },
   "pytest": {
-    "command": "python -m pytest -q tests/test_drift.py tests/test_scheduler_ml_retrain.py tests/test_schema_drift_per_project.py",
-    "passed": 28,
-    "duration_seconds": 17.42,
-    "database": "temporary SQLite; external credentials disabled"
+    "command": "python -m pytest -q tests/test_drift_strategy.py tests/test_drift.py tests/test_scheduler_ml_retrain.py tests/test_schema_drift_per_project.py",
+    "passed": 42,
+    "new_tests": 14,
+    "database": "temporary SQLite from tests/conftest.py; no external database"
   },
   "lint": {
-    "command": "ruff check scripts/check_drift_strategy.py docs/course/drift/render_pdf.py",
+    "command": "ruff check scripts/check_drift_strategy.py tests/test_drift_strategy.py docs/course/drift/render_pdf.py",
     "result": "PASS"
   },
   "pdf": {
@@ -29,20 +42,22 @@
       2
     ],
     "all_four_sections_present": true,
-    "renderer": "ReportLab; Arial/Arial Bold TTF provided on command line",
-    "command": "python docs/course/drift/render_pdf.py --font /path/to/Arial.ttf --bold-font '/path/to/Arial Bold.ttf'"
+    "renderer": "ReportLab 4.2.5; Liberation Sans 2.1.5 Regular/Bold TTF (metric-compatible with Arial) provided on command line",
+    "command": "python docs/course/drift/render_pdf.py --font /path/to/LiberationSans-Regular.ttf --bold-font /path/to/LiberationSans-Bold.ttf"
   },
   "limitations": [
-    "Synthetic independent marginals, not a production time series or concept-drift evidence",
-    "No new model-quality experiments; FPR 13.27% from #9 remains unchanged",
-    "No scheduler/API integration, real promotion/rollback, Docker or E2E run",
-    "Human review pending"
+    "Synthetic table histories, not a production time series or concept-drift evidence",
+    "Trend corridor and 10% share are initial settings; sensitivity to small shifts was not measured",
+    "No new model-quality experiments; FPR 13.27% from #9 remains unchanged and is not mixed with the Compose demo model",
+    "No monitoring/API/scheduler integration of the policy, real promotion/rollback, Docker or E2E run",
+    "Human review of the rework pending"
   ],
   "sha256": {
-    "docs/course/drift/STRATEGY.md": "63d42dd8ee7636ae110761f21290bfa1f63b70f0eb637c4c220fa1ce7149b424",
-    "docs/course/drift/STRATEGY.pdf": "0ae0c33fcf2196f7d07c0f164e8e217cfdb5c14d74cd8cc7e8a1d5144dd4fc45",
-    "docs/course/drift/demo.json": "93cee269a9d6792041da4979f9020c865a66045fcdcd7e3a7eb790d0169975a4",
-    "scripts/check_drift_strategy.py": "ef268c1e1759a55e34262bc344cc2687643e49dde3faadd42dacc7b6bce35efd",
+    "docs/course/drift/STRATEGY.md": "07803d245191fcb098b887d63d81d56e30fb7023edf298bd3d50c01231ba571c",
+    "docs/course/drift/STRATEGY.pdf": "702fdc7d92800e46dc43946cf3dc117d34ca42782ccb95e60c246985e5fc46de",
+    "docs/course/drift/demo.json": "c7c6b9cca17de4b0a363df583e5917864a6368ec18d2fce9893fd25627b9bdde",
+    "scripts/check_drift_strategy.py": "44806be31e74728626308b87370eab62d7b5fd19f4672b6f0c76a8a848c92ac7",
+    "tests/test_drift_strategy.py": "d5e14efb3a314db1b869be278cae7860eba8c09ccca9c686f519412b263d12ad",
     "docs/course/drift/render_pdf.py": "37a08d75cd097869f6a66f1f4feabff051c2cf6a149e7cfec40256571698e397",
     "ml/drift.py": "7446f407866292353598a0f65c1739c437113fb2428cadec5ba14f5b15687fb2"
   }
