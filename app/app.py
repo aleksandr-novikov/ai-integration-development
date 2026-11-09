@@ -17,7 +17,7 @@ from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
 from .health import build_health_payload
 from .instrumentation import install_http_instrumentation, metrics_response
-from .logging_setup import AppLoggedRequestHandler, configure_logging
+from .logging_setup import AppLoggedRequestHandler, EndpointLoggingFlask, configure_logging
 from .projects import bp as projects_bp
 from .projects import invites_bp, load_current_project_into_g
 from .security import init_logging_filter
@@ -226,7 +226,8 @@ def create_app(config: dict | None = None):
     # Sentry init (#103) — no-op when SENTRY_DSN is empty. Must run
     # before Flask() so FlaskIntegration can patch the right symbols.
     init_sentry()
-    app = Flask(__name__)
+    # Unhandled-exception log line names the endpoint, not the raw path (#15).
+    app = EndpointLoggingFlask(__name__)
     app.config["SECRET_KEY"] = settings.SECRET_KEY
     app.config["COLLECT_INTERVAL_MINUTES"] = settings.COLLECT_INTERVAL_MINUTES
     # Session cookie hardening (#49). SameSite=Lax is what makes the

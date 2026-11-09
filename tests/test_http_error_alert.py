@@ -131,6 +131,58 @@ def test_server_errors_are_logged_at_error_level(client, caplog, monkeypatch):
     assert record.levelname == "ERROR" and record.status == 503
 
 
+@pytest.mark.parametrize("log_format", ["json", "text"])
+def test_unhandled_exception_log_names_endpoint_not_token_path(tmp_path, monkeypatch, log_format):
+    import io
+
+    import app.metrics_storage as storage
+    from app.app import create_app
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LOG_FORMAT", log_format)
+    monkeypatch.setattr(storage.settings, "MONITOR_DB_URL", f"sqlite:///{tmp_path / 'm.db'}")
+    monkeypatch.setattr(storage, "_engine", None)
+    monkeypatch.setattr(storage, "_initialized", False)
+
+    def broken_lookup(token_hash):
+        raise RuntimeError("synthetic storage failure")
+
+    monkeypatch.setattr(storage, "get_active_password_reset_token", broken_lookup)
+    # PROPAGATE_EXCEPTIONS=False — production path: Flask logs and returns 500.
+    app = create_app({"TESTING": True, "PROPAGATE_EXCEPTIONS": False})
+    # Keep the real root handler (formatter + scrubbing), only redirect its stream.
+    [handler] = [h for h in logging.getLogger().handlers if getattr(h, "_dbmon_managed", False)]
+    out = io.StringIO()
+    handler.setStream(out)
+
+    resp = app.test_client().get(
+        "/auth/reset-password/fake-path-token-15?token=fake-query-token-15",
+        headers={"X-Request-Id": "rid-exc-15"},
+    )
+    log = out.getvalue()
+
+    assert resp.status_code == 500
+    assert b"Internal Server Error" in resp.data
+    assert "fake-path-token" not in log and "fake-query-token" not in log
+    assert "/auth/reset-password" not in log
+    assert "Traceback (most recent call last)" in log
+    assert "RuntimeError: synthetic storage failure" in log
+    if log_format == "json":
+        records = [json.loads(line) for line in log.splitlines() if line.startswith("{")]
+        [exc] = [r for r in records if r["message"].startswith("Exception on")]
+        [http] = [r for r in records if r["logger"] == "app.http"]
+        assert exc["level"] == "ERROR"
+        assert exc["message"] == "Exception on auth.reset_password [GET]"
+        assert "synthetic storage failure" in exc["exc_info"]
+        assert (http["level"], http["status"], http["endpoint"]) == (
+            "ERROR", 500, "auth.reset_password",
+        )
+        assert exc["request_id"] == http["request_id"] == "rid-exc-15"
+    else:
+        assert "ERROR app.app: Exception on auth.reset_password [GET]" in log
+        assert "ERROR app.http: GET auth.reset_password -> 500" in log
+
+
 def test_dev_server_handler_drops_werkzeug_access_line(caplog):
     handler = object.__new__(AppLoggedRequestHandler)  # no socket needed
     with caplog.at_level(logging.INFO, logger="werkzeug"):

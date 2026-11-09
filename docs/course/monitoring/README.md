@@ -17,6 +17,7 @@
 | JSON-логи, `request_id`, `X-Request-Id` | Работали: [app/logging_setup.py](../../../app/logging_setup.py), хуки в [app/app.py](../../../app/app.py) | Без изменений |
 | Маскирование секретов в логах | Работало: [app/security.py](../../../app/security.py) (DSN, Telegram, AWS, Bearer, `token=`/`password=`), Sentry `before_send` | Без изменений |
 | Лог HTTP-запросов | **Только строка dev-сервера Werkzeug**: без `request_id` и latency, с ANSI-кодами и **сырым путём** — токен из `/auth/reset-password/<token>` попадал в лог (проверено запуском `python -m app.app`, тестовым токеном) | Одна строка `app.http` на запрос в существующем хуке [app/instrumentation.py](../../../app/instrumentation.py): метод, имя endpoint, статус, `duration_ms`; 5xx — уровень ERROR. Строка Werkzeug отключена (`AppLoggedRequestHandler`), остальные сообщения Werkzeug сохранены |
+| Лог необработанного исключения | Стандартный `Flask.log_exception` писал `Exception on <request.path> [GET]` — токен из `/auth/reset-password/<token>` попадал в лог (воспроизведено регрессионным тестом до исправления, см. раздел 5) | `EndpointLoggingFlask` в [app/logging_setup.py](../../../app/logging_setup.py) переопределяет только `log_exception`: имя endpoint вместо пути; уровень ERROR, логгер Flask, `exc_info` с traceback сохранены |
 | `/metrics`: запросы, ошибки, latency | Работали: `http_requests_total`, `http_request_duration_seconds` | Без изменений |
 | `/healthz` с пробами зависимостей | Работал: [app/health.py](../../../app/health.py) | Без изменений |
 | Технический алерт | Не было (Telegram в проекте — для аномалий данных) | [app/http_alert.py](../../../app/http_alert.py): правило доли 5xx; сценарий проверки [scripts/check_http_error_alert.py](../../../scripts/check_http_error_alert.py) |
@@ -32,13 +33,13 @@
 | Событие | Логгер, уровень | Поля |
 |---|---|---|
 | Каждый HTTP-запрос | `app.http`, INFO (< 500) / ERROR (5xx) | `event=http_request`, `method`, `endpoint`, `status`, `duration_ms`, `request_id` |
-| Необработанное исключение | `app` (Flask), ERROR + `exc_info` | traceback; в Sentry — при заданном `SENTRY_DSN` |
+| Необработанное исключение | логгер Flask (`app` при `python -m app.app`), ERROR + `exc_info` | `Exception on <endpoint> [<метод>]`, traceback, `request_id` (JSON); в Sentry — при заданном `SENTRY_DSN` |
 | Отказ зависимости в `/healthz` | `app.health`, WARNING | компонент, время, первая строка ошибки |
 | Срабатывание / восстановление алерта | `app.alerts`, WARNING / INFO | `event`, `alert`, `requests`, `errors`, `ratio`, `threshold`, `window_s` |
 | Старт, планировщик, сборщик | `app.startup`, `collectors.*`, `apscheduler.*` | сообщения о запуске заданий и ошибках сбора |
 
-Сырой путь и query string в `app.http` не пишутся: вместо них имя Flask-endpoint
-(`auth.reset_password`, а не `/auth/reset-password/<token>`).
+Сырой путь и query string в `app.http` и в строке необработанного исключения не пишутся:
+вместо них имя Flask-endpoint (`auth.reset_password`, а не `/auth/reset-password/<token>`).
 
 **Фактические записи** (dev-сервер `python -m app.app`, `LOG_FORMAT=json`,
 09.11.2026; запрос к сбросу пароля шёл с тестовым токеном в пути и в `?token=`):
@@ -172,6 +173,18 @@ PYTHONPATH=<repo> LOG_FORMAT=json python -m app.http_alert \
 В `server.log` 2 строки от `werkzeug` (баннер запуска), строк доступа Werkzeug нет;
 тестовые токены в `server.log` и `watcher.log` не найдены (`grep -c` = 0).
 
+**Исправление лога исключения** (доработка по ревью, 09.11.2026): dev-сервер
+`python -m app.app`, `FLASK_DEBUG=0`, `MONITOR_DB_URL` в несуществующем каталоге —
+запрос `/auth/reset-password/<тестовый токен>?token=<тестовое значение>` падает с
+необработанным `sqlalchemy.exc.OperationalError` внутри `auth.reset_password`.
+Ответ 500 в `LOG_FORMAT=json` и `text`; тестовые значения и `/auth/reset-password`
+в логе сервера не найдены (`grep -c` = 0). Фактические записи (JSON; `timestamp` опущен, `exc_info` сокращён):
+
+```json
+{"level": "ERROR", "logger": "app", "message": "Exception on auth.reset_password [GET]", "request_id": "rid-live-json", "exc_info": "Traceback (most recent call last): … sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) unable to open database file …"}
+{"level": "ERROR", "logger": "app.http", "message": "GET auth.reset_password -> 500 in 12.2 ms", "request_id": "rid-live-json", "event": "http_request", "method": "GET", "endpoint": "auth.reset_password", "status": 500, "duration_ms": 12.2}
+```
+
 ## 5. Безопасность
 
 - **Секреты в логах.** Тестовые значения (токен в пути сброса пароля,
@@ -179,6 +192,15 @@ PYTHONPATH=<repo> LOG_FORMAT=json python -m app.http_alert \
   `/metrics` в A и B; автоматическая проверка — `fake_secrets_absent_from_logs_and_metrics`
   и `tests/test_http_error_alert.py`. Существующие тесты маскирования (`tests/test_secrets_scrub.py`,
   `tests/test_logging_json.py`, `tests/test_sentry.py`) проходят.
+- **Необработанное исключение с секретом в пути** (замечание ревью, исправлено).
+  Источник — `Flask.log_exception` (Flask 3.1.3), вызываемый из `handle_exception`
+  при `FLASK_DEBUG=0`: сообщение строилось из `request.path`. До исправления тест
+  записывал `Exception on /auth/reset-password/<тестовый токен> [GET]` в JSON и text.
+  После: `Exception on auth.reset_password [GET]`, ответ — штатный 500
+  `Internal Server Error`, traceback и `request_id` сохранены. Проверка:
+  `python -m pytest -q tests/test_http_error_alert.py -k unhandled` — сбой хранилища
+  внутри `auth.reset_password`, `PROPAGATE_EXCEPTIONS=False`, токен в пути и в `?token=`,
+  оба формата логов.
 - **Внешние сервисы.** Сценарий A работает без сети: Sentry, Telegram, LLM, SMTP пустые;
   `/healthz` помечает SMTP и in-memory лимиты как `n/a` и отвечает 200.
   Наблюдатель при недоступном `/metrics` пишет `scrape_failed` и продолжает работу.
@@ -200,7 +222,16 @@ PYTHONPATH=<repo> LOG_FORMAT=json python -m app.http_alert \
 - Счётчики живут в памяти одного процесса (`python -m app.app`); для нескольких
   worker-процессов нужен multiprocess-режим `prometheus_client`.
 - Состояние алерта хранится в памяти наблюдателя; после его перезапуска окно набирается заново.
-- Если необработанное исключение возникнет в обработчике с секретом в пути, стандартная
-  строка Flask `Exception on <path>` запишет путь; маскирование по шаблонам
-  (`token=`, DSN, Bearer) токен в сегменте пути не распознаёт. Отдельно не исправлялось.
+- Строка необработанного исключения больше не содержит путь, но **текст самого
+  исключения** и traceback маскируются только существующими шаблонами (`token=`, DSN,
+  Bearer и т. п.): если код поместит секрет в сообщение исключения, он попадёт в лог.
+  Универсальной защиты от произвольных секретов нет.
+- Режим `FLASK_DEBUG=1` (интерактивный отладчик Werkzeug, локальная разработка) Flask
+  обрабатывает без `log_exception`; в этой задаче не проверялся. Docker-образ
+  запускается с `FLASK_DEBUG=0`.
+- Sentry (при заданном `SENTRY_DSN`) по коду `sentry-sdk` 2.x получает `request.url`
+  с путём запроса; `before_send` не распознаёт токен в сегменте пути. Отправка в Sentry
+  в этой задаче не проверялась и не менялась.
+- В текстовом формате логов (`LOG_FORMAT=text`) `request_id` не выводится — так
+  было и до #15; корреляция по `request_id` доступна в `LOG_FORMAT=json`.
 - Docker-сборка и Compose-прогон в этой задаче не выполнялись: Docker и API не изменялись.

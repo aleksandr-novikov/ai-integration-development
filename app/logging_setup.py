@@ -20,6 +20,7 @@ import logging
 import sys
 from datetime import UTC, datetime
 
+from flask import Flask
 from werkzeug.serving import WSGIRequestHandler
 
 # Keys present on every ``LogRecord`` by default. We skip them when
@@ -133,4 +134,27 @@ class AppLoggedRequestHandler(WSGIRequestHandler):
         return None
 
 
-__all__ = ["AppLoggedRequestHandler", "JsonFormatter", "configure_logging"]
+class EndpointLoggingFlask(Flask):
+    """Flask whose unhandled-exception line names the endpoint (#15).
+
+    Stock ``Flask.log_exception`` writes ``Exception on <request.path>``,
+    so a failure inside ``/auth/reset-password/<token>`` put the live token
+    into the log. Same ERROR level, logger and ``exc_info`` (traceback);
+    only the path is replaced by the Flask endpoint name, as in ``app.http``.
+    """
+
+    def log_exception(self, exc_info) -> None:
+        from flask import request
+
+        self.logger.error(
+            "Exception on %s [%s]", request.endpoint or "unknown", request.method,
+            exc_info=exc_info,
+        )
+
+
+__all__ = [
+    "AppLoggedRequestHandler",
+    "EndpointLoggingFlask",
+    "JsonFormatter",
+    "configure_logging",
+]
