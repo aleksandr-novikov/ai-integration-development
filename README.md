@@ -759,6 +759,12 @@ DSN-пароли продолжают маскироваться через `DSN
 как formatter увидит запись — `topsecret` в исходном `logger.warning`
 превращается в `u:***@host` и в text-, и в JSON-выводе.
 
+Каждый HTTP-запрос даёт одну строку логгера `app.http` (метод, имя
+endpoint, статус, `duration_ms`; 5xx — ERROR). Сырой путь и query string
+не пишутся, собственная строка доступа dev-сервера Werkzeug отключена.
+Метрики, эскиз дашборда и алерт на долю 5xx — в
+[docs/course/monitoring](docs/course/monitoring/README.md) (#15).
+
 ---
 
 ## Структура проекта

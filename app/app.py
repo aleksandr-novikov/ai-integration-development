@@ -17,7 +17,7 @@ from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
 from .health import build_health_payload
 from .instrumentation import install_http_instrumentation, metrics_response
-from .logging_setup import configure_logging
+from .logging_setup import AppLoggedRequestHandler, configure_logging
 from .projects import bp as projects_bp
 from .projects import invites_bp, load_current_project_into_g
 from .security import init_logging_filter
@@ -414,4 +414,6 @@ if __name__ == "__main__":
         debug=os.environ.get("FLASK_DEBUG", "1") == "1",
         host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", 5001)),
+        # Per-request lines come from app.http (#15), not from Werkzeug.
+        request_handler=AppLoggedRequestHandler,
     )

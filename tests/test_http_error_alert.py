@@ -1,0 +1,156 @@
+"""HTTP access log and the HTTP 5xx alert rule (#15)."""
+
+from __future__ import annotations
+
+import json
+import logging
+
+import pytest
+
+from app.http_alert import HttpErrorAlert, HttpErrorRule, Snapshot, snapshot_from_metrics
+from app.logging_setup import AppLoggedRequestHandler, JsonFormatter
+
+METRICS_TEXT = """\
+# HELP http_requests_total Total HTTP requests served.
+# TYPE http_requests_total counter
+http_requests_total{endpoint="health",method="GET",status="200"} 7.0
+http_requests_total{endpoint="health",method="GET",status="503"} 2.0
+http_requests_total{endpoint="unknown",method="GET",status="404"} 3.0
+http_requests_total{endpoint="metrics",method="GET",status="500"} 50.0
+# HELP failed_login_attempts_total Failed logins.
+# TYPE failed_login_attempts_total counter
+failed_login_attempts_total 4.0
+"""
+
+
+def test_snapshot_counts_5xx_and_skips_metrics_endpoint():
+    snap = snapshot_from_metrics(METRICS_TEXT, 0, HttpErrorRule())
+    assert (snap.requests, snap.errors) == (12, 2)
+
+
+def _feed(alert, points):
+    return [alert.observe(Snapshot(ts, req, err)) for ts, req, err in points]
+
+
+def test_rule_waits_for_minimum_requests():
+    alert = HttpErrorAlert(HttpErrorRule(min_requests=10))
+    results = _feed(alert, [(0, 0, 0), (30, 9, 9)])
+    assert results[-1].condition is None
+    assert alert.state == "inactive"
+
+
+def test_rule_fires_above_threshold_and_resolves_when_errors_leave_window():
+    alert = HttpErrorAlert(HttpErrorRule(threshold=0.1, window_seconds=300, min_requests=10))
+    results = _feed(alert, [
+        (0, 0, 0),
+        (150, 20, 2),    # 10 % — not above the threshold
+        (300, 30, 4),    # 4/30 = 13 %
+        (450, 40, 4),    # 2/20 within the window: still 10 % → resolves
+    ])
+    assert [r.event for r in results] == [None, None, "firing", "resolved"]
+    assert results[1].condition is False
+    assert results[2].ratio == pytest.approx(0.1333)
+    assert alert.state == "inactive"
+
+
+def test_insufficient_data_keeps_firing_state():
+    alert = HttpErrorAlert(HttpErrorRule(min_requests=10, window_seconds=60))
+    _feed(alert, [(0, 0, 0), (30, 10, 5)])
+    assert alert.state == "firing"
+    result = alert.observe(Snapshot(120, 12, 5))  # no earlier snapshot in the window
+    assert result.condition is None and result.state == "firing"
+
+
+def test_counter_reset_drops_history():
+    alert = HttpErrorAlert(HttpErrorRule(min_requests=1))
+    _feed(alert, [(0, 100, 0), (30, 120, 0)])
+    result = alert.observe(Snapshot(60, 5, 5))  # process restarted
+    assert result.requests == 0 and result.condition is None
+
+
+def test_signal_is_logged_with_structured_fields(caplog):
+    alert = HttpErrorAlert(HttpErrorRule(min_requests=1))
+    with caplog.at_level(logging.INFO, logger="app.alerts"):
+        _feed(alert, [(0, 0, 0), (30, 10, 5), (60, 60, 5)])  # 50 %, then 5/60
+    events = [(r.levelname, r.event) for r in caplog.records]
+    assert events == [("WARNING", "alert_firing"), ("INFO", "alert_resolved")]
+    assert caplog.records[0].errors == 5 and caplog.records[0].requests == 10
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    import app.metrics_storage as storage
+    from app.app import create_app
+
+    monkeypatch.setattr(storage.settings, "MONITOR_DB_URL", f"sqlite:///{tmp_path / 'm.db'}")
+    monkeypatch.setattr(storage, "_engine", None)
+    monkeypatch.setattr(storage, "_initialized", False)
+    return create_app({"TESTING": True}).test_client()
+
+
+class _JsonLines(logging.Handler):
+    """Format at emit time — request_id is read from the live request context."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFormatter(JsonFormatter())
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+
+
+def test_access_log_uses_endpoint_name_not_raw_path(client):
+    http_logger = logging.getLogger("app.http")
+    capture = _JsonLines()
+    http_logger.addHandler(capture)
+    try:
+        resp = client.get(
+            "/auth/reset-password/secret-reset-token-123?token=secret-query-456",
+            headers={"X-Request-Id": "rid-15"},
+        )
+    finally:
+        http_logger.removeHandler(capture)
+    [line] = capture.lines
+    payload = json.loads(line)
+    assert payload["event"] == "http_request"
+    assert payload["endpoint"] == "auth.reset_password"
+    assert payload["status"] == resp.status_code
+    assert payload["request_id"] == "rid-15"
+    assert payload["duration_ms"] >= 0
+    assert "secret-" not in line
+
+
+def test_server_errors_are_logged_at_error_level(client, caplog, monkeypatch):
+    from sqlalchemy import create_engine
+
+    monkeypatch.setattr("app.db._engine", create_engine("sqlite:////nonexistent-dir/t.db"))
+    with caplog.at_level(logging.INFO, logger="app.http"):
+        assert client.get("/healthz").status_code == 503
+    record = next(r for r in caplog.records if r.name == "app.http")
+    assert record.levelname == "ERROR" and record.status == 503
+
+
+def test_dev_server_handler_drops_werkzeug_access_line(caplog):
+    handler = object.__new__(AppLoggedRequestHandler)  # no socket needed
+    with caplog.at_level(logging.INFO, logger="werkzeug"):
+        handler.log_request(200, 10)
+    assert caplog.records == []
+
+
+def test_demo_scenario_passes(tmp_path, monkeypatch):
+    import app.db
+    import app.metrics_storage as storage
+    from app.config import settings
+    from scripts import check_http_error_alert as demo
+
+    for key in [*demo._OFFLINE_SETTINGS, "MONITOR_DB_URL"]:
+        monkeypatch.setattr(settings, key, getattr(settings, key))
+    monkeypatch.setattr(storage, "_engine", None)
+    monkeypatch.setattr(storage, "_initialized", False)
+    monkeypatch.setattr(app.db, "_engine", None)
+
+    report = demo.run_demo(tmp_path)
+    assert report["checks"] == {name: True for name in report["checks"]}
+    events = [(e["phase"], e["event"]) for e in report["evaluations"] if e["event"]]
+    assert events == [("failure", "firing"), ("recovery", "resolved")]

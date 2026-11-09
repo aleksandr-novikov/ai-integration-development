@@ -20,6 +20,8 @@ import logging
 import sys
 from datetime import UTC, datetime
 
+from werkzeug.serving import WSGIRequestHandler
+
 # Keys present on every ``LogRecord`` by default. We skip them when
 # harvesting "extra" fields supplied via logger.info(..., extra={...}),
 # otherwise the JSON payload would balloon with framework noise.
@@ -116,4 +118,19 @@ def configure_logging(log_format: str, level: str = "INFO") -> None:
     root.addHandler(handler)
 
 
-__all__ = ["JsonFormatter", "configure_logging"]
+class AppLoggedRequestHandler(WSGIRequestHandler):
+    """Werkzeug dev-server handler without its own access-log line (#15).
+
+    The Docker image runs ``python -m app.app``, i.e. the Werkzeug server.
+    Its default access line logs the raw request path (a password-reset
+    token lives in the path), has no ``request_id`` and carries ANSI colour
+    codes into JSON logs. ``app.instrumentation`` already writes a safe
+    ``app.http`` line for every request, so the Werkzeug one is dropped.
+    ``log_error`` / server messages are untouched.
+    """
+
+    def log_request(self, code="-", size="-") -> None:
+        return None
+
+
+__all__ = ["AppLoggedRequestHandler", "JsonFormatter", "configure_logging"]
