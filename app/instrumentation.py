@@ -12,6 +12,11 @@ collector primitives the rest of the codebase increments:
 - ``failed_login_attempts_total`` — incremented from
   ``app/auth.py::login`` on wrong password / unknown email.
 
+The same after_request hook writes one ``app.http`` access-log line per
+request (#15): method, endpoint name, status and latency. The raw path and
+query string are never logged — ``/auth/reset-password/<token>`` would
+otherwise put a live reset token into the log stream.
+
 We use the default global ``REGISTRY`` so a future ``prometheus-multiproc``
 swap (for gunicorn -w N) only changes the registry, not the call sites.
 """
@@ -30,6 +35,7 @@ from prometheus_client import (
 )
 
 logger = logging.getLogger(__name__)
+access_logger = logging.getLogger("app.http")
 
 
 # ── Counters / histograms ──────────────────────────────────────────────────
@@ -75,11 +81,13 @@ def _start_timer() -> None:
 
 
 def _record_response(response):
-    """Bump http_requests_total / http_request_duration_seconds.
+    """Bump http_requests_total / http_request_duration_seconds and log.
 
     ``request.endpoint`` is None for 404s on unknown routes — we substitute
     a literal so the cardinality doesn't explode with the request path
-    (which can be arbitrary user-controlled garbage).
+    (which can be arbitrary user-controlled garbage). The access log uses
+    the same endpoint name for the same reason, plus it keeps path-embedded
+    secrets (reset tokens, invite tokens) out of the logs.
     """
     endpoint = request.endpoint or "unknown"
     method = request.method
@@ -87,11 +95,27 @@ def _record_response(response):
     http_requests_total.labels(
         method=method, endpoint=endpoint, status=status,
     ).inc()
+    duration_ms = None
     start = getattr(g, "_prom_start_time", None)
     if start is not None:
+        elapsed = time.perf_counter() - start
         http_request_duration_seconds.labels(
             method=method, endpoint=endpoint,
-        ).observe(time.perf_counter() - start)
+        ).observe(elapsed)
+        duration_ms = round(elapsed * 1000, 1)
+    # 5xx is a server-side failure worth an ERROR; 4xx is the client's
+    # problem and stays INFO so bots probing random URLs don't page anyone.
+    access_logger.log(
+        logging.ERROR if response.status_code >= 500 else logging.INFO,
+        "%s %s -> %s in %s ms", method, endpoint, status, duration_ms,
+        extra={
+            "event": "http_request",
+            "method": method,
+            "endpoint": endpoint,
+            "status": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
     return response
 
 

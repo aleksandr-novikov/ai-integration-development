@@ -1,0 +1,407 @@
+{
+  "scope": "Flask test client, TESTING mode, throwaway SQLite; simulated scrape clock (30s per tick). Rule evaluation and log signal only; no notification is delivered and no external service is contacted.",
+  "rule": {
+    "name": "HttpErrorRatioHigh",
+    "threshold": 0.1,
+    "window_seconds": 300.0,
+    "min_requests": 10,
+    "excluded_endpoints": [
+      "metrics"
+    ]
+  },
+  "traffic_per_tick": [
+    "GET /healthz",
+    "GET /",
+    "GET /no-such-page (404)"
+  ],
+  "failure": "target DB engine points to a non-existent directory → /healthz 503",
+  "phases": {
+    "normal": 10,
+    "failure": 6,
+    "recovery": 12
+  },
+  "checks": {
+    "normal_never_firing": true,
+    "normal_had_enough_data": true,
+    "failure_detected": true,
+    "recovery_resolved": true,
+    "final_state_inactive": true,
+    "signal_logged": true,
+    "http_requests_and_errors_logged": true,
+    "fake_secrets_absent_from_logs_and_metrics": true
+  },
+  "passed": true,
+  "exposed_fake_secrets": [],
+  "log_records": 122,
+  "log_samples": {
+    "http_request_ok": {
+      "timestamp": "2026-11-09T02:22:42.725+00:00",
+      "level": "INFO",
+      "logger": "app.http",
+      "message": "GET health -> 200 in 7.3 ms",
+      "request_id": "56d4d3c9734b4b86bd1ddcab24f46cab",
+      "event": "http_request",
+      "method": "GET",
+      "endpoint": "health",
+      "status": 200,
+      "duration_ms": 7.3
+    },
+    "http_request_5xx": {
+      "timestamp": "2026-11-09T02:22:42.843+00:00",
+      "level": "ERROR",
+      "logger": "app.http",
+      "message": "GET health -> 503 in 3.0 ms",
+      "request_id": "986b5f2c4fd441ec81ba8ef3039320f0",
+      "event": "http_request",
+      "method": "GET",
+      "endpoint": "health",
+      "status": 503,
+      "duration_ms": 3.0
+    },
+    "dependency_failure": {
+      "timestamp": "2026-11-09T02:22:42.842+00:00",
+      "level": "WARNING",
+      "logger": "app.health",
+      "message": "healthz: target_db failed in 0ms: (sqlite3.OperationalError) unable to open database file\n(Background on this error at: https://sqlalche.me/e/20/e3q8)",
+      "request_id": "986b5f2c4fd441ec81ba8ef3039320f0"
+    },
+    "alert_firing": {
+      "timestamp": "2026-11-09T02:22:42.886+00:00",
+      "level": "WARNING",
+      "logger": "app.alerts",
+      "message": "alert HttpErrorRatioHigh firing: 5xx 4/30 = 13.3% over 300s (threshold > 10%)",
+      "request_id": null,
+      "event": "alert_firing",
+      "alert": "HttpErrorRatioHigh",
+      "requests": 30,
+      "errors": 4,
+      "ratio": 0.1333,
+      "threshold": 0.1,
+      "window_s": 300.0
+    },
+    "alert_resolved": {
+      "timestamp": "2026-11-09T02:22:42.992+00:00",
+      "level": "INFO",
+      "logger": "app.alerts",
+      "message": "alert HttpErrorRatioHigh resolved: 5xx 3/30 = 10.0% over 300s (threshold > 10%)",
+      "request_id": null,
+      "event": "alert_resolved",
+      "alert": "HttpErrorRatioHigh",
+      "requests": 30,
+      "errors": 3,
+      "ratio": 0.1,
+      "threshold": 0.1,
+      "window_s": 300.0
+    }
+  },
+  "evaluations": [
+    {
+      "tick": 1,
+      "phase": "normal",
+      "ts": 30,
+      "requests": 4,
+      "errors": 0,
+      "ratio": null,
+      "condition": null,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 2,
+      "phase": "normal",
+      "ts": 60,
+      "requests": 7,
+      "errors": 0,
+      "ratio": null,
+      "condition": null,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 3,
+      "phase": "normal",
+      "ts": 90,
+      "requests": 10,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 4,
+      "phase": "normal",
+      "ts": 120,
+      "requests": 13,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 5,
+      "phase": "normal",
+      "ts": 150,
+      "requests": 16,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 6,
+      "phase": "normal",
+      "ts": 180,
+      "requests": 19,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 7,
+      "phase": "normal",
+      "ts": 210,
+      "requests": 22,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 8,
+      "phase": "normal",
+      "ts": 240,
+      "requests": 25,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 9,
+      "phase": "normal",
+      "ts": 270,
+      "requests": 28,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 10,
+      "phase": "normal",
+      "ts": 300,
+      "requests": 31,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 11,
+      "phase": "failure",
+      "ts": 330,
+      "requests": 30,
+      "errors": 1,
+      "ratio": 0.0333,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 12,
+      "phase": "failure",
+      "ts": 360,
+      "requests": 30,
+      "errors": 2,
+      "ratio": 0.0667,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 13,
+      "phase": "failure",
+      "ts": 390,
+      "requests": 30,
+      "errors": 3,
+      "ratio": 0.1,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 14,
+      "phase": "failure",
+      "ts": 420,
+      "requests": 30,
+      "errors": 4,
+      "ratio": 0.1333,
+      "condition": true,
+      "state": "firing",
+      "event": "firing"
+    },
+    {
+      "tick": 15,
+      "phase": "failure",
+      "ts": 450,
+      "requests": 30,
+      "errors": 5,
+      "ratio": 0.1667,
+      "condition": true,
+      "state": "firing",
+      "event": null
+    },
+    {
+      "tick": 16,
+      "phase": "failure",
+      "ts": 480,
+      "requests": 30,
+      "errors": 6,
+      "ratio": 0.2,
+      "condition": true,
+      "state": "firing",
+      "event": null
+    },
+    {
+      "tick": 17,
+      "phase": "recovery",
+      "ts": 510,
+      "requests": 30,
+      "errors": 6,
+      "ratio": 0.2,
+      "condition": true,
+      "state": "firing",
+      "event": null
+    },
+    {
+      "tick": 18,
+      "phase": "recovery",
+      "ts": 540,
+      "requests": 30,
+      "errors": 6,
+      "ratio": 0.2,
+      "condition": true,
+      "state": "firing",
+      "event": null
+    },
+    {
+      "tick": 19,
+      "phase": "recovery",
+      "ts": 570,
+      "requests": 30,
+      "errors": 6,
+      "ratio": 0.2,
+      "condition": true,
+      "state": "firing",
+      "event": null
+    },
+    {
+      "tick": 20,
+      "phase": "recovery",
+      "ts": 600,
+      "requests": 30,
+      "errors": 6,
+      "ratio": 0.2,
+      "condition": true,
+      "state": "firing",
+      "event": null
+    },
+    {
+      "tick": 21,
+      "phase": "recovery",
+      "ts": 630,
+      "requests": 30,
+      "errors": 5,
+      "ratio": 0.1667,
+      "condition": true,
+      "state": "firing",
+      "event": null
+    },
+    {
+      "tick": 22,
+      "phase": "recovery",
+      "ts": 660,
+      "requests": 30,
+      "errors": 4,
+      "ratio": 0.1333,
+      "condition": true,
+      "state": "firing",
+      "event": null
+    },
+    {
+      "tick": 23,
+      "phase": "recovery",
+      "ts": 690,
+      "requests": 30,
+      "errors": 3,
+      "ratio": 0.1,
+      "condition": false,
+      "state": "inactive",
+      "event": "resolved"
+    },
+    {
+      "tick": 24,
+      "phase": "recovery",
+      "ts": 720,
+      "requests": 30,
+      "errors": 2,
+      "ratio": 0.0667,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 25,
+      "phase": "recovery",
+      "ts": 750,
+      "requests": 30,
+      "errors": 1,
+      "ratio": 0.0333,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 26,
+      "phase": "recovery",
+      "ts": 780,
+      "requests": 30,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 27,
+      "phase": "recovery",
+      "ts": 810,
+      "requests": 30,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    },
+    {
+      "tick": 28,
+      "phase": "recovery",
+      "ts": 840,
+      "requests": 30,
+      "errors": 0,
+      "ratio": 0.0,
+      "condition": false,
+      "state": "inactive",
+      "event": null
+    }
+  ]
+}
