@@ -68,6 +68,28 @@ failed_login_attempts_total = Counter(
     "Failed /auth/login attempts (wrong password or unknown email).",
 )
 
+# Published inference calls of app/inference_adapter.py (#16). The full source
+# identity, version and demo mode keep series of different models apart.
+INFERENCE_LABELS = (
+    "project_id", "connection_id", "schema_name", "table_name",
+    "model_version", "feature_schema_version", "demo",
+)
+
+inference_predictions_total = Counter(
+    "inference_predictions_total",
+    "Inference service calls by outcome: ok or the adapter error code.",
+    labelnames=(*INFERENCE_LABELS, "outcome"),
+)
+
+# Server-Timing of the service: model computation only, without HTTP. One
+# IsolationForest vector takes milliseconds; the upper buckets catch overload.
+inference_predict_duration_seconds = Histogram(
+    "inference_predict_duration_seconds",
+    "Prediction computation time reported by the inference service (seconds).",
+    labelnames=INFERENCE_LABELS,
+    buckets=(0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+
 
 # ── HTTP hooks ─────────────────────────────────────────────────────────────
 
@@ -148,6 +170,8 @@ __all__ = [
     "failed_login_attempts_total",
     "http_request_duration_seconds",
     "http_requests_total",
+    "inference_predict_duration_seconds",
+    "inference_predictions_total",
     "install_http_instrumentation",
     "metrics_response",
 ]

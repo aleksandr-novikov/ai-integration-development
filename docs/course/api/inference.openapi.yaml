@@ -163,6 +163,13 @@ paths:
             source и observed_at соответствуют запросу; возвращены фактически
             использованные версии. is_anomaly = (score < 0), threshold = 0.
             Обновление/откат активной модели не меняет уже сохранённый ответ.
+          headers:
+            Server-Timing:
+              description: |
+                Время вычисления предсказания загруженной моделью, мс (W3C Server
+                Timing). Без HTTP, авторизации и загрузки артефакта.
+              schema: {type: string}
+              example: predict;dur=1.234
           content:
             application/json:
               schema:
