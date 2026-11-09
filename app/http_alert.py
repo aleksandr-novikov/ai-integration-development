@@ -5,8 +5,9 @@
 - окно 5 минут, разность счётчиков между самым старым снимком окна и
   последним — так же, как ``increase()`` в Prometheus, но без экстраполяции;
 - решение принимается только при ≥ 10 запросах в окне: Docker HEALTHCHECK
-  опрашивает ``/healthz`` каждые 30 с, поэтому 10 запросов за 5 минут есть
-  даже без пользовательского трафика;
+  опрашивает ``/healthz`` каждые 30 с — около 10 запросов за 5 минут и без
+  пользовательского трафика (не гарантированно: на границе окна бывает 9,
+  тогда решение откладывается);
 - срабатывание при доле 5xx > 10 %: при минимальном объёме нужны две ошибки
   из десяти, одиночный сбой алерт не поднимает;
 - ``/metrics`` в расчёт не входит: запросы сборщика не являются трафиком
@@ -94,8 +95,11 @@ class HttpErrorAlert:
         self._snapshots: deque[Snapshot] = deque()
 
     def observe(self, snap: Snapshot) -> Evaluation:
-        # Счётчик уменьшился — процесс перезапущен; старые снимки несравнимы.
-        if self._snapshots and snap.requests < self._snapshots[-1].requests:
+        # Любой из счётчиков уменьшился — процесс перезапущен; старые снимки
+        # несравнимы. Проверяются оба: после рестарта общий счётчик может уже
+        # превысить прежний, а счётчик ошибок — нет (отрицательная разность).
+        last = self._snapshots[-1] if self._snapshots else None
+        if last and (snap.requests < last.requests or snap.errors < last.errors):
             self._snapshots.clear()
         self._snapshots.append(snap)
         while self._snapshots[0].ts < snap.ts - self.rule.window_seconds:

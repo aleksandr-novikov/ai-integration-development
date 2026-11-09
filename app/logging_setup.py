@@ -9,8 +9,8 @@ Why a hand-rolled formatter instead of ``python-json-logger``?
 - We need to pull ``request_id`` from ``flask.g`` — small custom hook
   is cleaner than configuring an external formatter to do the same.
 - ``setLogRecordFactory`` (installed in ``app.security``) already scrubs
-  DSN passwords before any formatter sees the record, so the JSON
-  output is automatically safe — no extra integration.
+  DSN passwords before any formatter sees the record; the rendered
+  traceback is scrubbed by ``ScrubbingFormatter`` (#15).
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ from datetime import UTC, datetime
 from flask import Flask
 from werkzeug.serving import WSGIRequestHandler
 
+from app.security import scrub_value
+
 # Keys present on every ``LogRecord`` by default. We skip them when
 # harvesting "extra" fields supplied via logger.info(..., extra={...}),
 # otherwise the JSON payload would balloon with framework noise.
@@ -34,12 +36,35 @@ _STANDARD_RECORD_ATTRS = {
 }
 
 
-class JsonFormatter(logging.Formatter):
+class ScrubbingFormatter(logging.Formatter):
+    """Formatter that also scrubs the rendered traceback / stack (#15).
+
+    The LogRecord factory only rewrites ``msg`` and ``args``; the text built
+    from ``exc_info`` (exception message, source lines) bypassed it, so
+    ``logger.warning(..., exc_info=True)`` could print ``token=...`` or a
+    DSN password. The traceback is kept, only known secret formats are
+    masked by the same ``scrub_value``.
+    """
+
+    def formatException(self, ei) -> str:
+        return scrub_value(super().formatException(ei))
+
+    def formatStack(self, stack_info: str) -> str:
+        return scrub_value(super().formatStack(stack_info))
+
+    def format(self, record: logging.LogRecord) -> str:
+        # ``exc_text`` may already be cached by another handler's formatter.
+        if record.exc_text:
+            record.exc_text = scrub_value(record.exc_text)
+        return super().format(record)
+
+
+class JsonFormatter(ScrubbingFormatter):
     """One JSON object per line — keys are stable, values are scrubbed.
 
     Required fields: ``timestamp``, ``level``, ``logger``, ``message``,
     ``request_id``. Additional fields:
-    - ``exc_info`` (stringified traceback) when present
+    - ``exc_info`` (stringified traceback, scrubbed) when present
     - any ``extra={...}`` dict keys passed to the log call
     """
 
@@ -113,7 +138,7 @@ def configure_logging(log_format: str, level: str = "INFO") -> None:
     if log_format.lower() == "json":
         handler.setFormatter(JsonFormatter())
     else:
-        handler.setFormatter(logging.Formatter(
+        handler.setFormatter(ScrubbingFormatter(
             "%(asctime)s %(levelname)s %(name)s: %(message)s"
         ))
     root.addHandler(handler)
@@ -156,5 +181,6 @@ __all__ = [
     "AppLoggedRequestHandler",
     "EndpointLoggingFlask",
     "JsonFormatter",
+    "ScrubbingFormatter",
     "configure_logging",
 ]

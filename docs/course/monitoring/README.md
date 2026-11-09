@@ -15,7 +15,7 @@
 | Механизм | До #15 | Изменение в #15 |
 |---|---|---|
 | JSON-логи, `request_id`, `X-Request-Id` | Работали: [app/logging_setup.py](../../../app/logging_setup.py), хуки в [app/app.py](../../../app/app.py) | Без изменений |
-| Маскирование секретов в логах | Работало: [app/security.py](../../../app/security.py) (DSN, Telegram, AWS, Bearer, `token=`/`password=`), Sentry `before_send` | Без изменений |
+| Маскирование секретов в логах | Работало для `msg`/`args`: [app/security.py](../../../app/security.py) (DSN, Telegram, AWS, Bearer, `token=`/`password=`), Sentry `before_send`. **Текст traceback из `exc_info` не маскировался** — секрет из сообщения исключения попадал в лог (воспроизведено тестом до исправления, см. раздел 5) | Шаблоны не менялись. `ScrubbingFormatter` в [app/logging_setup.py](../../../app/logging_setup.py) пропускает отформатированный traceback и `stack_info` через существующий `scrub_value` в `LOG_FORMAT=json` и `text` |
 | Лог HTTP-запросов | **Только строка dev-сервера Werkzeug**: без `request_id` и latency, с ANSI-кодами и **сырым путём** — токен из `/auth/reset-password/<token>` попадал в лог (проверено запуском `python -m app.app`, тестовым токеном) | Одна строка `app.http` на запрос в существующем хуке [app/instrumentation.py](../../../app/instrumentation.py): метод, имя endpoint, статус, `duration_ms`; 5xx — уровень ERROR. Строка Werkzeug отключена (`AppLoggedRequestHandler`), остальные сообщения Werkzeug сохранены |
 | Лог необработанного исключения | Стандартный `Flask.log_exception` писал `Exception on <request.path> [GET]` — токен из `/auth/reset-password/<token>` попадал в лог (воспроизведено регрессионным тестом до исправления, см. раздел 5) | `EndpointLoggingFlask` в [app/logging_setup.py](../../../app/logging_setup.py) переопределяет только `log_exception`: имя endpoint вместо пути; уровень ERROR, логгер Flask, `exc_info` с traceback сохранены |
 | `/metrics`: запросы, ошибки, latency | Работали: `http_requests_total`, `http_request_duration_seconds` | Без изменений |
@@ -89,11 +89,11 @@ http_request_duration_seconds_sum{endpoint="health",method="GET"} 0.022163244080
 | Условие | доля 5xx за окно **> 10 %** |
 | Порог, обоснование | В норме 5xx около 0. При минимальном объёме (10 запросов) нужно ≥ 2 ошибки, поэтому одиночный сбой алерт не поднимает. Полный отказ зависимости (`/healthz` 503) при одном трафике healthcheck даёт 100 %; при 3 запросах на тик, как в сценарии, — около 33 % |
 | Окно | 5 минут, разность счётчиков между самым старым снимком окна и последним (как `increase()` в Prometheus, без экстраполяции) |
-| Минимум наблюдений | **≥ 10 запросов** в окне. Docker HEALTHCHECK опрашивает `/healthz` раз в 30 с — 10 запросов за 5 минут есть и без пользователей. При меньшем объёме решение не принимается, состояние сохраняется |
+| Минимум наблюдений | **≥ 10 запросов** в окне. Docker HEALTHCHECK опрашивает `/healthz` раз в 30 с — около 10 запросов за 5 минут и без пользователей, но **не гарантированно**: в зависимости от того, как опросы наблюдателя ложатся относительно проверок, и от задержек/таймаутов healthcheck в окне может оказаться 9. При меньшем объёме решение не принимается, состояние сохраняется до следующего опроса |
 | Сигнал | Запись `app.alerts`: WARNING `alert_firing`, INFO `alert_resolved`; поле `event` в JSON-строке результата оценки |
 | Канал / способ наблюдения | stdout наблюдателя `python -m app.http_alert` (или `docker compose logs`, если запустить его рядом с сервисом). **Доставка во внешний канал (Telegram, почта) не реализована и не проверялась** |
 | Ответственная роль | DevOps / дежурный инженер (по [MLOPS_ROADMAP](../MLOPS_ROADMAP.md) — роль DevOps) |
-| Сброс счётчика | Если счётчик уменьшился (перезапуск процесса), история окна сбрасывается |
+| Сброс счётчиков | Если уменьшился общий счётчик запросов **или** счётчик 5xx (перезапуск процесса), история окна сбрасывается: отрицательная доля не вычисляется, `resolved` по несравнимым снимкам не выдаётся (при `firing` состояние сохраняется), оценка возобновляется, когда в новом окне набирается ≥ 10 запросов |
 
 **При срабатывании.** 1) Открыть `/healthz`: какой компонент `down`.
 2) Найти в логах `app.http` с `level=ERROR` и `app.health` за последние 5 минут;
@@ -173,6 +173,12 @@ PYTHONPATH=<repo> LOG_FORMAT=json python -m app.http_alert \
 В `server.log` 2 строки от `werkzeug` (баннер запуска), строк доступа Werkzeug нет;
 тестовые токены в `server.log` и `watcher.log` не найдены (`grep -c` = 0).
 
+**Доработка по второму ревью** (09.11.2026, Python 3.12.3): новые регрессионные тесты
+до исправления — 5 failed (ложный `resolved`: `[None, 'firing', 'resolved']`; тестовые
+`token=`, пароль DSN и Bearer — в traceback в JSON и text), после — `tests/test_http_error_alert.py`
+15 passed. Сценарий A повторён: те же 8 проверок `true`, `firing` на тике 14,
+`resolved` на тике 23, итог `inactive` — результаты совпадают с [demo.json](demo.json).
+
 **Исправление лога исключения** (доработка по ревью, 09.11.2026): dev-сервер
 `python -m app.app`, `FLASK_DEBUG=0`, `MONITOR_DB_URL` в несуществующем каталоге —
 запрос `/auth/reset-password/<тестовый токен>?token=<тестовое значение>` падает с
@@ -201,6 +207,17 @@ PYTHONPATH=<repo> LOG_FORMAT=json python -m app.http_alert \
   `python -m pytest -q tests/test_http_error_alert.py -k unhandled` — сбой хранилища
   внутри `auth.reset_password`, `PROPAGATE_EXCEPTIONS=False`, токен в пути и в `?token=`,
   оба формата логов.
+- **Секреты в traceback** (замечание второго ревью, исправлено). Фабрика `LogRecord`
+  маскировала только `msg` и `args`; текст, который форматтер строит из `exc_info`
+  (сообщение исключения, строки исходного кода), шёл в лог как есть. Пример — существующий
+  обработчик `_probe_iceberg` в [app/connections.py](../../../app/connections.py):
+  `logger.warning("iceberg probe failed: %s", exc, exc_info=True)` — сообщение было
+  замаскировано, а traceback содержал `token=…`, пароль DSN и Bearer-токен. Теперь
+  `ScrubbingFormatter` (базовый для `JsonFormatter` и текстовый форматтер `configure_logging`)
+  применяет тот же `scrub_value` к traceback и `stack_info`; traceback, тип исключения,
+  уровень и `request_id` сохраняются, известные форматы заменяются на `***`. Проверка:
+  `python -m pytest -q tests/test_http_error_alert.py -k "traceback or unhandled"` —
+  реальный путь `_probe_iceberg` и необработанное исключение Flask, оба формата логов.
 - **Внешние сервисы.** Сценарий A работает без сети: Sentry, Telegram, LLM, SMTP пустые;
   `/healthz` помечает SMTP и in-memory лимиты как `n/a` и отвечает 200.
   Наблюдатель при недоступном `/metrics` пишет `scrape_failed` и продолжает работу.
@@ -222,10 +239,15 @@ PYTHONPATH=<repo> LOG_FORMAT=json python -m app.http_alert \
 - Счётчики живут в памяти одного процесса (`python -m app.app`); для нескольких
   worker-процессов нужен multiprocess-режим `prometheus_client`.
 - Состояние алерта хранится в памяти наблюдателя; после его перезапуска окно набирается заново.
-- Строка необработанного исключения больше не содержит путь, но **текст самого
-  исключения** и traceback маскируются только существующими шаблонами (`token=`, DSN,
-  Bearer и т. п.): если код поместит секрет в сообщение исключения, он попадёт в лог.
-  Универсальной защиты от произвольных секретов нет.
+- Строка необработанного исключения больше не содержит путь, а traceback проходит
+  маскирование, но только **существующими шаблонами** (`token=`, `password=`, DSN, Bearer,
+  Telegram, AWS): секрет другого формата в сообщении исключения или в строке исходного
+  кода попадёт в лог. Универсальной защиты от произвольных секретов нет. Маскирование
+  traceback действует в форматтерах `configure_logging`; сторонний обработчик со своим
+  форматтером его не получает.
+- Сброс счётчиков распознаётся по уменьшению любого из них между соседними опросами;
+  если за время между опросами процесс перезапустился и оба счётчика уже превысили
+  прежние значения, сброс незаметен (как и у `increase()` в Prometheus).
 - Режим `FLASK_DEBUG=1` (интерактивный отладчик Werkzeug, локальная разработка) Flask
   обрабатывает без `log_exception`; в этой задаче не проверялся. Docker-образ
   запускается с `FLASK_DEBUG=0`.

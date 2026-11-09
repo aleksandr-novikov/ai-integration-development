@@ -68,6 +68,20 @@ def test_counter_reset_drops_history():
     assert result.requests == 0 and result.condition is None
 
 
+def test_error_counter_reset_does_not_resolve_falsely():
+    # After a restart the total already exceeds the old value, errors do not.
+    alert = HttpErrorAlert(HttpErrorRule(threshold=0.1, window_seconds=300, min_requests=10))
+    results = _feed(alert, [(0, 100, 80), (30, 120, 100), (60, 140, 70)])
+    assert [r.event for r in results] == [None, "firing", None]
+    assert results[-1].condition is None and results[-1].errors == 0
+    assert alert.state == "firing"
+    # Evaluation resumes on fresh snapshots only.
+    resumed = _feed(alert, [(90, 145, 71), (120, 160, 72)])
+    assert [r.condition for r in resumed] == [None, False]
+    assert resumed[-1].event == "resolved"
+    assert (resumed[-1].requests, resumed[-1].errors) == (20, 2)
+
+
 def test_signal_is_logged_with_structured_fields(caplog):
     alert = HttpErrorAlert(HttpErrorRule(min_requests=1))
     with caplog.at_level(logging.INFO, logger="app.alerts"):
@@ -145,7 +159,7 @@ def test_unhandled_exception_log_names_endpoint_not_token_path(tmp_path, monkeyp
     monkeypatch.setattr(storage, "_initialized", False)
 
     def broken_lookup(token_hash):
-        raise RuntimeError("synthetic storage failure")
+        raise RuntimeError("synthetic storage failure token=fake-exc-token-15")
 
     monkeypatch.setattr(storage, "get_active_password_reset_token", broken_lookup)
     # PROPAGATE_EXCEPTIONS=False — production path: Flask logs and returns 500.
@@ -164,6 +178,7 @@ def test_unhandled_exception_log_names_endpoint_not_token_path(tmp_path, monkeyp
     assert resp.status_code == 500
     assert b"Internal Server Error" in resp.data
     assert "fake-path-token" not in log and "fake-query-token" not in log
+    assert "fake-exc-token" not in log  # exception text inside the traceback
     assert "/auth/reset-password" not in log
     assert "Traceback (most recent call last)" in log
     assert "RuntimeError: synthetic storage failure" in log
@@ -181,6 +196,56 @@ def test_unhandled_exception_log_names_endpoint_not_token_path(tmp_path, monkeyp
     else:
         assert "ERROR app.app: Exception on auth.reset_password [GET]" in log
         assert "ERROR app.http: GET auth.reset_password -> 500" in log
+
+
+_TB_SECRETS = {
+    "token": "fake-tb-token-15",
+    "dsn": "fake-dsn-pw-15",
+    "bearer": "fake-bearer-15-abcdef",
+}
+
+
+@pytest.mark.parametrize("log_format", ["json", "text"])
+def test_traceback_secrets_are_scrubbed_on_probe_failure(monkeypatch, log_format):
+    import io
+
+    import app.connections
+    import app.db
+    from app.logging_setup import configure_logging
+    from app.security import init_logging_filter
+
+    init_logging_filter()
+    configure_logging(log_format)
+    [handler] = [h for h in logging.getLogger().handlers if getattr(h, "_dbmon_managed", False)]
+    out = io.StringIO()
+    handler.setStream(out)
+
+    def broken_adapter(dsn, **_):
+        raise RuntimeError(
+            f"catalog refused token={_TB_SECRETS['token']} "
+            f"via postgresql://svc:{_TB_SECRETS['dsn']}@db/x "
+            f"Authorization: Bearer {_TB_SECRETS['bearer']}"
+        )
+
+    monkeypatch.setattr(app.db, "make_adapter_for_url", broken_adapter)
+    # Existing handler: logger.warning("iceberg probe failed: %s", exc, exc_info=True).
+    result = app.connections._probe_iceberg("iceberg+rest://localhost:8181")
+    log = out.getvalue()
+
+    assert result["code"] == "catalog_error"
+    for secret in _TB_SECRETS.values():
+        assert secret not in log
+    assert "Traceback (most recent call last)" in log
+    assert "in broken_adapter" in log
+    assert "RuntimeError: catalog refused token=***" in log
+    assert "postgresql://svc:***@db/x" in log and "Bearer ***" in log
+    if log_format == "json":
+        [record] = [json.loads(line) for line in log.splitlines() if line.startswith("{")]
+        assert record["level"] == "WARNING" and record["logger"] == "app.connections"
+        assert record["message"].startswith("iceberg probe failed: catalog refused token=***")
+        assert "RuntimeError: catalog refused token=***" in record["exc_info"]
+    else:
+        assert "WARNING app.connections: iceberg probe failed: catalog refused token=***" in log
 
 
 def test_dev_server_handler_drops_werkzeug_access_line(caplog):
