@@ -15,13 +15,20 @@ Two scrubbing layers stack with the existing #56 ``setLogRecordFactory``:
 2. A keyword-based scrub flips any dict value whose key matches
    ``password`` / ``token`` / ``api_key`` (case-insensitive) to a fixed
    placeholder — protects ``extra={"api_key": "…"}`` patterns.
+3. The password-reset token is a path segment
+   (``/auth/reset-password/<token>``), not ``?token=``: FlaskIntegration
+   puts it into ``request.url`` and frame locals (``environ`` /
+   ``PATH_INFO`` / ``RAW_URI``, ``Request`` repr). Every string in the
+   event gets that segment replaced by ``[REDACTED]`` (#15).
 
-Both run on every event in ``before_send``.
+All run on every event in ``before_send``.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import uuid
 from typing import Any
 
 from app.config import settings
@@ -35,6 +42,12 @@ logger = logging.getLogger(__name__)
 # in Sentry, but Sentry is for traces, not for ML pipeline tags).
 _SECRET_KEY_HINTS = ("password", "token", "secret", "api_key", "authorization")
 _REDACTED = "[REDACTED]"
+
+# Route ``auth.reset_password`` (``/auth/reset-password/<token>``). The
+# segment ends at the next ``/``, query, fragment, whitespace or a quote /
+# bracket of a repr; ``%`` stays inside, so a percent-encoded token is
+# masked whole. ``<token>`` (url_rule template) is left as is.
+_RESET_TOKEN_IN_PATH = re.compile(r"(/auth/reset-password/)[^/?#\s'\"<>\\]+")
 
 
 def _key_is_secret(key: Any) -> bool:
@@ -68,7 +81,26 @@ def _scrub(value: Any) -> Any:
         return tuple(_scrub(v) for v in value)
     # str / BaseException / anything else: defer to security.scrub_value
     # which handles strings via regex AND stringifies exceptions safely.
-    return scrub_value(value)
+    value = scrub_value(value)
+    if isinstance(value, str):
+        value = _RESET_TOKEN_IN_PATH.sub(rf"\g<1>{_REDACTED}", value)
+    return value
+
+
+def _withheld_event(event: Any) -> dict:
+    """Stand-in event when scrubbing fails: no data from the raw event.
+
+    Keeps the signal (an event still arrives) without the URL, frames or
+    extras that may hold secrets. ``event_id`` is required by the SDK
+    after ``before_send``.
+    """
+    event_id = event.get("event_id") if isinstance(event, dict) else None
+    return {
+        "event_id": event_id if isinstance(event_id, str) else uuid.uuid4().hex,
+        "level": "error",
+        "message": "Sentry event withheld: before_send scrub failed",
+        "tags": {"scrub_failed": "true"},
+    }
 
 
 def before_send(event: dict, _hint: dict) -> dict | None:
@@ -80,12 +112,12 @@ def before_send(event: dict, _hint: dict) -> dict | None:
     """
     try:
         return _scrub(event)
-    except Exception:  # pragma: no cover - defence in depth
-        # If scrubbing itself fails for some pathological event shape,
-        # we still want SOMETHING in Sentry — better a less-clean event
-        # than no signal at all.
-        logger.exception("Sentry before_send scrub failed; sending raw event")
-        return event
+    except Exception:
+        # If scrubbing itself fails for some pathological event shape, we
+        # still send SOMETHING — but never the raw event: it bypasses every
+        # mask above (#15).
+        logger.exception("Sentry before_send scrub failed; sending withheld event")
+        return _withheld_event(event)
 
 
 def init_sentry() -> bool:

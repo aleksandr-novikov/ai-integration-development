@@ -218,6 +218,18 @@ PYTHONPATH=<repo> LOG_FORMAT=json python -m app.http_alert \
   уровень и `request_id` сохраняются, известные форматы заменяются на `***`. Проверка:
   `python -m pytest -q tests/test_http_error_alert.py -k "traceback or unhandled"` —
   реальный путь `_probe_iceberg` и необработанное исключение Flask, оба формата логов.
+- **Токен сброса пароля в событии Sentry** (замечание ревью, исправлено). Токен стоит в
+  сегменте пути `/auth/reset-password/<token>`, а не в `?token=`, и прежний `before_send`
+  его не распознавал. Проверено с настоящим `FlaskIntegration` и локальным транспортом
+  (без отправки в Sentry): до исправления тестовый токен был в `request.url` и в
+  переменных кадров (`environ`: `PATH_INFO`, `REQUEST_URI`, `RAW_URI`; repr `Request`).
+  Теперь `before_send` в [app/sentry.py](../../../app/sentry.py) заменяет этот сегмент
+  на `[REDACTED]` во всех строках события, включая токен в процентной кодировке:
+  `https://example.test/auth/reset-password/[REDACTED]`. Маршрут, тип исключения,
+  стек и остальные поля сохраняются, другие URL не меняются. Если очистка события
+  падает, вместо исходного события (раньше оно уходило без маскирования) отправляется
+  заглушка с тем же `event_id`, тегом `scrub_failed` и без данных запроса. Проверка:
+  `python -m pytest -q tests/test_sentry.py` (до исправления — 6 failed).
 - **Внешние сервисы.** Сценарий A работает без сети: Sentry, Telegram, LLM, SMTP пустые;
   `/healthz` помечает SMTP и in-memory лимиты как `n/a` и отвечает 200.
   Наблюдатель при недоступном `/metrics` пишет `scrape_failed` и продолжает работу.
@@ -251,9 +263,11 @@ PYTHONPATH=<repo> LOG_FORMAT=json python -m app.http_alert \
 - Режим `FLASK_DEBUG=1` (интерактивный отладчик Werkzeug, локальная разработка) Flask
   обрабатывает без `log_exception`; в этой задаче не проверялся. Docker-образ
   запускается с `FLASK_DEBUG=0`.
-- Sentry (при заданном `SENTRY_DSN`) по коду `sentry-sdk` 2.x получает `request.url`
-  с путём запроса; `before_send` не распознаёт токен в сегменте пути. Отправка в Sentry
-  в этой задаче не проверялась и не менялась.
+- Sentry: токен маскируется только для маршрута `/auth/reset-password/<token>` в
+  буквальном виде. Если сам префикс маршрута записан в процентной кодировке (например,
+  `reset%2Dpassword`), в «сырых» полях `environ` он не распознаётся. Секреты других
+  форматов в путях не распознаются. Реальная отправка в Sentry не проверялась —
+  только локальный транспорт SDK. Настройки SDK не менялись.
 - В текстовом формате логов (`LOG_FORMAT=text`) `request_id` не выводится — так
   было и до #15; корреляция по `request_id` доступна в `LOG_FORMAT=json`.
 - Docker-сборка и Compose-прогон в этой задаче не выполнялись: Docker и API не изменялись.
