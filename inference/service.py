@@ -6,11 +6,12 @@ import logging
 import os
 import secrets
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from weakref import WeakValueDictionary
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from jsonschema import ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -214,7 +215,7 @@ def create_app(config=None):
         return await model_info(await authorized_payload(request, model_validator))
 
     @app.post("/v1/predict")
-    async def predict(request: Request):
+    async def predict(request: Request, response: Response):
         payload = await authorized_payload(request, request_validator)
         try:
             validate_semantics(payload)
@@ -223,12 +224,16 @@ def create_app(config=None):
 
         def score():
             loaded = resolve(payload)
+            # Model computation only: no HTTP, authorization or artifact loading.
+            started = time.perf_counter()
             try:
                 prediction = loaded.predict(payload["features"])
             except RegistryError:
                 raise ApiError(503, "model_unavailable") from None
             except ValueError:
                 raise ApiError(422, "invalid_input") from None
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            response.headers["Server-Timing"] = f"predict;dur={elapsed_ms:.3f}"
             result = {
                 **prediction,
                 "observed_at": payload["observed_at"],

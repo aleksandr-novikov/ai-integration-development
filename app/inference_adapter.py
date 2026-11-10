@@ -38,6 +38,9 @@ SOURCE_ERRORS = (
 # Refusals tied to one observation; later observations stay scorable.
 OBSERVATION_ERRORS = frozenset({"invalid_history", "insufficient_history", "invalid_input"})
 VERSION_FIELDS = ("model_version", "feature_schema_version")
+# Metric label for versions neither bound nor answered by the service. It does
+# not match the contract patterns, so no real version can share its series.
+UNVERIFIED_VERSION = "_unverified"
 # Notifications concern current events. After an outage unreported observations
 # stay relevant for the reach of the legacy per-tick scoring window.
 MAX_EVENT_AGE = timedelta(days=1)
@@ -183,6 +186,68 @@ def predict(
         "features": features,
     }
     config = configuration() if _config is None else _config
+    try:
+        result, compute_seconds = _request(payload, config, client)
+    except AdapterError as exc:
+        _record_call(payload, config, exc.code)
+        raise
+    _record_call(payload, config, "ok", compute_seconds)
+    if interactive:
+        floor = _new_event_floor(source, aligned)
+        if source_storage.insert_prediction(result) and any(
+            entry["source"] == source
+            and all(entry[key] == result[key] for key in VERSION_FIELDS)
+            for entry in bindings(source["project_id"])
+        ):
+            _alert_new_event(result, floor)
+    return result
+
+
+def _record_call(payload, config, outcome, compute_seconds=None):
+    """One inference call in /metrics, labelled by full source, version and mode.
+
+    The source is always a configured binding. Versions come from the request,
+    so they label a series only when the configuration binds them to this source
+    or the service answered for them (a model in its registry); any other
+    version's errors share one ``UNVERIFIED_VERSION`` series per source.
+    """
+    from app.instrumentation import inference_predict_duration_seconds, inference_predictions_total
+
+    versions = {key: payload[key] for key in VERSION_FIELDS}
+    known = outcome == "ok" or any(
+        entry.get("source") == payload["source"]
+        and all(entry.get(key) == value for key, value in versions.items())
+        for entry in config.get("bindings", [])
+    )
+    labels = {
+        **payload["source"],
+        **(versions if known else dict.fromkeys(VERSION_FIELDS, UNVERIFIED_VERSION)),
+        "demo": str(bool(config.get("demo", False))).lower(),
+    }
+    inference_predictions_total.labels(**labels, outcome=outcome).inc()
+    if compute_seconds is not None:
+        inference_predict_duration_seconds.labels(**labels).observe(compute_seconds)
+
+
+def server_timing(header, name="predict"):
+    """Seconds of the named Server-Timing metric; None if absent or malformed."""
+    for metric in (header or "").split(","):
+        label, *params = metric.split(";")
+        if label.strip() != name:
+            continue
+        for param in params:
+            key, _, value = param.partition("=")
+            if key.strip() == "dur":
+                try:
+                    milliseconds = float(value.strip().strip('"'))
+                except ValueError:
+                    return None
+                return milliseconds / 1000 if math.isfinite(milliseconds) and milliseconds >= 0 else None
+    return None
+
+
+def _request(payload, config, client):
+    """HTTP call and response checks; returns (result, compute seconds or None)."""
     token = os.environ.get(config.get("token_env", "INFERENCE_ADAPTER_TOKEN"), "")
     if not token:
         raise AdapterError(503, "inference_unavailable")
@@ -225,15 +290,7 @@ def predict(
                 raise ValueError("inference identity mismatch")
     except (ValueError, KeyError, ValidationError):
         raise AdapterError(503, "invalid_inference_response") from None
-    if interactive:
-        floor = _new_event_floor(source, aligned)
-        if source_storage.insert_prediction(result) and any(
-            entry["source"] == source
-            and all(entry[key] == result[key] for key in VERSION_FIELDS)
-            for entry in bindings(source["project_id"])
-        ):
-            _alert_new_event(result, floor)
-    return result
+    return result, server_timing(response.headers.get("server-timing"))
 
 
 def check_binding(model_version, feature_schema_version):
