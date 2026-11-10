@@ -11,6 +11,8 @@
 [release.yml](../../../.github/workflows/release.yml), [promote.yml](../../../.github/workflows/promote.yml),
 [tests.yml](../../../.github/workflows/tests.yml), [runbook отката](../../runbooks/rollback.md),
 [docker-compose.yml](../../../docker-compose.yml), [app/health.py](../../../app/health.py),
+[журнал сборщика](../../../app/metrics_storage.py) (`collector_runs`), [флаги](../../../app/feature_flags.py),
+[подготовка `.env` стенда](../../../scripts/init_compose_demo.py),
 [реестр моделей](../models/README.md), [инференс и привязки](../inference/README.md),
 [миграции](../inference/migrations.md), мониторинг [сервиса](../monitoring/README.md) и
 [модели](../monitoring/model/README.md), [MLOps-roadmap](../MLOPS_ROADMAP.md).
