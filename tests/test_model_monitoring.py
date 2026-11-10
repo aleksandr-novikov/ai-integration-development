@@ -82,11 +82,63 @@ def test_invalid_values_make_inputs_inconclusive(bad, reason):
     values = steady(30)
     values[10] = bad
     result = summary(values, start=NOW - timedelta(minutes=145))
-    assert result["invalid_vectors"][reason] == 2  # both pairs that use the bad point
+    # One bad observation is one error; the two pairs that use it are excluded
+    # as its consequence, not counted as two more errors.
+    assert result["invalid_observations"] == {
+        "not_a_finite_number": 0, "out_of_bounds": 0, reason: 1}
+    assert result["vectors_with_invalid_observations"] == 2
+    assert result["invalid_vectors"] == {"not_a_finite_number": 0, "out_of_bounds": 0}
     assert result["valid_vectors"] == 27
+    assert result["vectors"] == 27 + 2
     assert result["conclusive"] is False and "invalid_values" in result["reasons"]
     for feature in result["features"].values():
         assert feature["distribution"]["min"] >= -1  # nothing invalid entered the statistics
+
+
+@pytest.mark.parametrize("bad", [(-10, "skip"), ("skip", 1.5), ("skip", math.nan)])
+def test_impossible_observation_without_its_pair_is_not_conclusive(bad):
+    values = [*steady(21), bad]  # newest collection lacks its paired metric
+    result = summary(values, start=NOW - timedelta(minutes=105))
+    assert result["valid_vectors"] == 20 and result["vectors"] == 20
+    assert sum(result["invalid_observations"].values()) == 1
+    assert result["vectors_with_invalid_observations"] == 0
+    assert result["conclusive"] is False and result["reasons"] == ["invalid_values"]
+
+
+def test_missing_pair_of_a_valid_observation_is_only_missing():
+    values = [*steady(21), (1300, "skip")]
+    result = summary(values, start=NOW - timedelta(minutes=105))
+    assert result["invalid_observations"] == {"not_a_finite_number": 0, "out_of_bounds": 0}
+    assert result["features"]["null_rate"]["missing"] == 1
+    assert result["features"]["row_count"]["missing"] == 0
+    assert result["valid_vectors"] == 20
+    assert result["conclusive"] is True and result["reasons"] == []
+
+
+@pytest.mark.parametrize(
+    ("start", "fresh", "reasons"),
+    [(NOW - timedelta(minutes=100), True, []),                      # newest exactly now
+     (NOW - timedelta(minutes=125), True, []),                      # 25 min old, limit 30
+     (NOW - timedelta(minutes=131), False, ["stale"]),              # 31 min old
+     (NOW + timedelta(days=1), False, ["future_timestamps"]),       # next day
+     (NOW - timedelta(minutes=99), False, ["future_timestamps"])],  # one minute ahead
+)
+def test_freshness_rejects_future_and_stale_observations(start, fresh, reasons):
+    result = summary(steady(21), start=start)
+    assert result["valid_vectors"] == 20
+    assert result["freshness"]["fresh"] is fresh
+    assert result["reasons"] == reasons and result["conclusive"] is (not reasons)
+    assert result["freshness"]["future_observations"] == (21 if start > NOW else
+                                                          int("future_timestamps" in reasons))
+
+
+def test_single_future_observation_beside_fresh_data_is_not_conclusive():
+    rc, nr = history(steady(21), start=NOW - timedelta(minutes=100))
+    rc.append({"ts": (NOW + timedelta(hours=1)).isoformat(), "value": 5000})
+    result = mm.input_summary(rc, nr, now=NOW, max_age=timedelta(minutes=30))
+    assert result["freshness"]["future_observations"] == 1
+    assert result["freshness"]["fresh"] is False
+    assert result["reasons"] == ["future_timestamps"]
 
 
 def test_empty_short_and_stale_histories_are_not_conclusive():
@@ -168,9 +220,11 @@ def service(bundle):
                                   "principals": [{"token": TOKEN, "sources": [SOURCE]}]}))
 
 
-def observe(service, version, monkeypatch, client=None):
+def observe(service, version, monkeypatch, client=None, bound=()):
     monkeypatch.setenv("TEST_MONITORING_TOKEN", TOKEN)
-    config = {"url": "http://testserver", "demo": True, "token_env": "TEST_MONITORING_TOKEN"}
+    config = {"url": "http://testserver", "demo": True, "token_env": "TEST_MONITORING_TOKEN",
+              "bindings": [{"source": SOURCE, "model_version": name,
+                            "feature_schema_version": "1.0.0"} for name in bound]}
     stamps = [(datetime.now(UTC) - timedelta(minutes=m)).replace(microsecond=0).isoformat()
               for m in (10, 5)]
     rc = [{"ts": stamps[0], "value": 300}, {"ts": stamps[1], "value": 310}]
@@ -217,18 +271,14 @@ def test_server_timing_parsing(header, expected):
 def test_inference_calls_errors_and_time_per_version(service, bundle, monkeypatch):
     _, version = bundle
     before = mm.inference_summary(generate_latest().decode(), series_labels(version))
-    observe(service, version, monkeypatch)
-    observe(service, version, monkeypatch)
-
-    class Down:
-        def post(self, *args, **kwargs):
-            raise httpx.ConnectError("down")
+    observe(service, version, monkeypatch, bound=(version,))
+    observe(service, version, monkeypatch)  # answered by the service: its own series
 
     with pytest.raises(adapter.AdapterError, match="inference_unavailable"):
-        observe(service, version, monkeypatch, client=Down())
+        observe(service, version, monkeypatch, client=Down(), bound=(version,))
     with pytest.raises(adapter.AdapterError) as refused:
-        observe(service, "if-" + "f" * 64, monkeypatch)  # unknown version
-    assert refused.value.code == "model_unavailable"
+        observe(service, "if-" + "f" * 64, monkeypatch, bound=("if-" + "f" * 64,))
+    assert refused.value.code == "model_unavailable"  # configured, missing in the registry
     after = mm.inference_summary(generate_latest().decode(), series_labels(version))
     assert after["ok"] - before["ok"] == 2
     assert after["errors"]["inference_unavailable"] - before["errors"].get(
@@ -239,6 +289,52 @@ def test_inference_calls_errors_and_time_per_version(service, bundle, monkeypatc
     assert timing["mean"] > 0 and timing["p95_bucket_le"] is not None
     other = mm.inference_summary(generate_latest().decode(), series_labels("if-" + "f" * 64))
     assert other["errors"] == {"model_unavailable": 1} and other["ok"] == 0
+
+
+class Down:
+    def post(self, *args, **kwargs):
+        raise httpx.ConnectError("down")
+
+
+def inference_series():
+    from prometheus_client import REGISTRY
+
+    return {
+        tuple(sorted(sample.labels.items()))
+        for metric in REGISTRY.collect() if metric.name == "inference_predictions"
+        for sample in metric.samples if sample.name == "inference_predictions_total"
+    }
+
+
+def test_unconfigured_versions_share_one_bounded_error_series(service, bundle, monkeypatch):
+    _, version = bundle
+    unverified = series_labels(adapter.UNVERIFIED_VERSION) | {
+        "feature_schema_version": adapter.UNVERIFIED_VERSION}
+    before_series = inference_series()
+    before = mm.inference_summary(generate_latest().decode(), unverified)
+    for i in range(100):
+        with pytest.raises(adapter.AdapterError) as refused:
+            observe(service, f"if-missing-{i:03d}", monkeypatch)
+        assert refused.value.code == "model_unavailable"
+    with pytest.raises(adapter.AdapterError, match="inference_unavailable"):
+        observe(service, "if-missing-down", monkeypatch, client=Down())
+    added = inference_series() - before_series
+    assert len(added) <= 2  # one per error code, never one per requested version
+    assert all(dict(labels)["model_version"] == adapter.UNVERIFIED_VERSION for labels in added)
+    after = mm.inference_summary(generate_latest().decode(), unverified)
+    assert after["errors"]["model_unavailable"] - before["errors"].get("model_unavailable", 0) == 100
+    assert after["errors"]["inference_unavailable"] - before["errors"].get(
+        "inference_unavailable", 0) == 1
+    # A configured version and a real answered one keep their own detail.
+    known = mm.inference_summary(generate_latest().decode(), series_labels(version))
+    observe(service, version, monkeypatch)
+    with pytest.raises(adapter.AdapterError, match="inference_unavailable"):
+        observe(service, version, monkeypatch, client=Down(), bound=(version,))
+    later = mm.inference_summary(generate_latest().decode(), series_labels(version))
+    assert later["ok"] - known["ok"] == 1
+    assert later["errors"]["inference_unavailable"] - known["errors"].get(
+        "inference_unavailable", 0) == 1
+    assert later["predict_seconds"]["count"] - known["predict_seconds"]["count"] == 1
 
 
 # ── Criterion 4: alert rule ────────────────────────────────────────────────

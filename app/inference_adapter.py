@@ -38,6 +38,9 @@ SOURCE_ERRORS = (
 # Refusals tied to one observation; later observations stay scorable.
 OBSERVATION_ERRORS = frozenset({"invalid_history", "insufficient_history", "invalid_input"})
 VERSION_FIELDS = ("model_version", "feature_schema_version")
+# Metric label for versions neither bound nor answered by the service. It does
+# not match the contract patterns, so no real version can share its series.
+UNVERIFIED_VERSION = "_unverified"
 # Notifications concern current events. After an outage unreported observations
 # stay relevant for the reach of the legacy per-tick scoring window.
 MAX_EVENT_AGE = timedelta(days=1)
@@ -201,13 +204,24 @@ def predict(
 
 
 def _record_call(payload, config, outcome, compute_seconds=None):
-    """One inference call in /metrics, labelled by full source, version and mode."""
+    """One inference call in /metrics, labelled by full source, version and mode.
+
+    The source is always a configured binding. Versions come from the request,
+    so they label a series only when the configuration binds them to this source
+    or the service answered for them (a model in its registry); any other
+    version's errors share one ``UNVERIFIED_VERSION`` series per source.
+    """
     from app.instrumentation import inference_predict_duration_seconds, inference_predictions_total
 
+    versions = {key: payload[key] for key in VERSION_FIELDS}
+    known = outcome == "ok" or any(
+        entry.get("source") == payload["source"]
+        and all(entry.get(key) == value for key, value in versions.items())
+        for entry in config.get("bindings", [])
+    )
     labels = {
         **payload["source"],
-        "model_version": payload["model_version"],
-        "feature_schema_version": payload["feature_schema_version"],
+        **(versions if known else dict.fromkeys(VERSION_FIELDS, UNVERIFIED_VERSION)),
         "demo": str(bool(config.get("demo", False))).lower(),
     }
     inference_predictions_total.labels(**labels, outcome=outcome).inc()

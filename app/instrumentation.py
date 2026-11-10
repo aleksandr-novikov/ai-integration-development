@@ -69,7 +69,9 @@ failed_login_attempts_total = Counter(
 )
 
 # Published inference calls of app/inference_adapter.py (#16). The full source
-# identity, version and demo mode keep series of different models apart.
+# identity, version and demo mode keep series of different models apart. Sources
+# are configured bindings; unconfigured versions that the service did not answer
+# share one ``_unverified`` series, so requests cannot grow the label set.
 INFERENCE_LABELS = (
     "project_id", "connection_id", "schema_name", "table_name",
     "model_version", "feature_schema_version", "demo",

@@ -7,7 +7,7 @@
     "table_name": "events"
   },
   "model": {
-    "model_version": "if-3551979b73ab0efa1f82de5f606e52d01afcdf18cd233244fb05bac65eca6e89",
+    "model_version": "if-131e19c5c6ba4fcdf5d3bd205d9521f5d3d5f7938255c695a90dc4d33827dd3c",
     "demo": true,
     "quality_admitted": false,
     "configuration": "contamination_005",
@@ -80,10 +80,10 @@
   ],
   "alert_log": [
     {
-      "timestamp": "2026-11-09T18:24:44.669+00:00",
+      "timestamp": "2026-11-10T03:19:01.021+00:00",
       "level": "WARNING",
       "logger": "app.alerts",
-      "message": "alert ModelAnomalyRateHigh firing: anomalies 3/20 = 15.0% (threshold >= 3, baseline 0.85%) for {'project_id': 'demo-project', 'connection_id': 'demo-connection', 'schema_name': 'public', 'table_name': 'events'} model if-3551979b73ab0efa1f82de5f606e52d01afcdf18cd233244fb05bac65eca6e89",
+      "message": "alert ModelAnomalyRateHigh firing: anomalies 3/20 = 15.0% (threshold >= 3, baseline 0.85%) for {'project_id': 'demo-project', 'connection_id': 'demo-connection', 'schema_name': 'public', 'table_name': 'events'} model if-131e19c5c6ba4fcdf5d3bd205d9521f5d3d5f7938255c695a90dc4d33827dd3c",
       "request_id": null,
       "event": "alert_firing",
       "alert": "ModelAnomalyRateHigh",
@@ -93,10 +93,10 @@
         "schema_name": "public",
         "table_name": "events"
       },
-      "model_version": "if-3551979b73ab0efa1f82de5f606e52d01afcdf18cd233244fb05bac65eca6e89",
+      "model_version": "if-131e19c5c6ba4fcdf5d3bd205d9521f5d3d5f7938255c695a90dc4d33827dd3c",
       "feature_schema_version": "1.0.0",
       "demo": true,
-      "observed_at": "2026-11-09T15:59:00.000000+00:00",
+      "observed_at": "2026-11-10T00:53:00.000000+00:00",
       "anomalies": 3,
       "observations": 20,
       "anomaly_rate": 0.15,
@@ -104,10 +104,10 @@
       "baseline_rate": 0.008511
     },
     {
-      "timestamp": "2026-11-09T18:24:45.821+00:00",
+      "timestamp": "2026-11-10T03:19:02.203+00:00",
       "level": "INFO",
       "logger": "app.alerts",
-      "message": "alert ModelAnomalyRateHigh resolved: anomalies 2/20 = 10.0% (threshold >= 3, baseline 0.85%) for {'project_id': 'demo-project', 'connection_id': 'demo-connection', 'schema_name': 'public', 'table_name': 'events'} model if-3551979b73ab0efa1f82de5f606e52d01afcdf18cd233244fb05bac65eca6e89",
+      "message": "alert ModelAnomalyRateHigh resolved: anomalies 2/20 = 10.0% (threshold >= 3, baseline 0.85%) for {'project_id': 'demo-project', 'connection_id': 'demo-connection', 'schema_name': 'public', 'table_name': 'events'} model if-131e19c5c6ba4fcdf5d3bd205d9521f5d3d5f7938255c695a90dc4d33827dd3c",
       "request_id": null,
       "event": "alert_resolved",
       "alert": "ModelAnomalyRateHigh",
@@ -117,10 +117,10 @@
         "schema_name": "public",
         "table_name": "events"
       },
-      "model_version": "if-3551979b73ab0efa1f82de5f606e52d01afcdf18cd233244fb05bac65eca6e89",
+      "model_version": "if-131e19c5c6ba4fcdf5d3bd205d9521f5d3d5f7938255c695a90dc4d33827dd3c",
       "feature_schema_version": "1.0.0",
       "demo": true,
-      "observed_at": "2026-11-09T17:44:00.000000+00:00",
+      "observed_at": "2026-11-10T02:38:00.000000+00:00",
       "anomalies": 2,
       "observations": 20,
       "anomaly_rate": 0.1,
@@ -132,8 +132,13 @@
     "inputs": {
       "observation_instants": 62,
       "aligned_instants": 62,
+      "invalid_observations": {
+        "not_a_finite_number": 0,
+        "out_of_bounds": 0
+      },
       "vectors": 61,
       "valid_vectors": 61,
+      "vectors_with_invalid_observations": 0,
       "invalid_vectors": {
         "not_a_finite_number": 0,
         "out_of_bounds": 0
@@ -194,9 +199,10 @@
         }
       },
       "freshness": {
-        "latest_valid_observation": "2026-11-09T18:19:00.000000+00:00",
-        "age_seconds": 346.3,
+        "latest_valid_observation": "2026-11-10T03:13:00.000000+00:00",
+        "age_seconds": 362.6,
         "max_age_seconds": 1800.0,
+        "future_observations": 0,
         "fresh": true
       },
       "conclusive": true,
@@ -205,10 +211,10 @@
     "model": {
       "version": {
         "available": true,
-        "model_version": "if-3551979b73ab0efa1f82de5f606e52d01afcdf18cd233244fb05bac65eca6e89",
+        "model_version": "if-131e19c5c6ba4fcdf5d3bd205d9521f5d3d5f7938255c695a90dc4d33827dd3c",
         "feature_schema_version": "1.0.0",
         "origin": "local-candidate",
-        "trained_at": "2026-11-09T18:24:23.823488+00:00",
+        "trained_at": "2026-11-10T03:18:43.876569+00:00",
         "time_status": "recorded",
         "age_days": 0.0,
         "quality_admitted": false,
@@ -228,8 +234,8 @@
           "mean": 0.125554,
           "std": 0.0823351
         },
-        "first_observed_at": "2026-11-09T13:19:00.000000+00:00",
-        "last_observed_at": "2026-11-09T18:19:00.000000+00:00"
+        "first_observed_at": "2026-11-09T22:13:00.000000+00:00",
+        "last_observed_at": "2026-11-10T03:13:00.000000+00:00"
       },
       "inference": {
         "calls": 62,
@@ -240,7 +246,7 @@
         "error_rate": 0.016129,
         "predict_seconds": {
           "count": 61,
-          "mean": 0.010585,
+          "mean": 0.010837,
           "p95_bucket_le": 0.025
         }
       }
@@ -253,7 +259,7 @@
         "min_baseline": 500
       },
       "status": "evaluated",
-      "observed_at": "2026-11-09T18:19:00.000000+00:00",
+      "observed_at": "2026-11-10T03:13:00.000000+00:00",
       "observations": 20,
       "anomalies": 0,
       "anomaly_rate": 0.0,

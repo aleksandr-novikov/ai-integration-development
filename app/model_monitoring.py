@@ -86,32 +86,63 @@ def _distribution(values: list[float]) -> dict | None:
     }
 
 
+def _observation_error(name: str, value) -> str | None:
+    """Ошибка одного исходного наблюдения независимо от наличия пары.
+
+    Числа приводятся так же, как в ``build_vector``; границы — те же, что
+    ``validate_vector`` проверяет для текущей точки вектора.
+    """
+    if value is None or isinstance(value, bool):
+        return "not_a_finite_number"
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return "not_a_finite_number"
+    if not math.isfinite(number):
+        return "not_a_finite_number"
+    if (name == "row_count" and number < 0) or (name == "null_rate" and not 0 <= number <= 1):
+        return "out_of_bounds"
+    return None
+
+
 def input_summary(row_counts, null_rates, *, now: datetime, max_age: timedelta) -> dict:
     """Показатели четырёх входов по истории одного источника.
 
-    Векторы строятся так же, как в ``ml.features.build_rows`` (inner join
-    по времени, разность с предыдущим согласованным наблюдением), но каждая
-    пара проверяется отдельно: невалидная пара учитывается, а не обрывает
-    расчёт и не заменяется нулём. Распределения — только по валидным векторам.
+    Каждое исходное наблюдение проверяется отдельно, даже без парной метрики
+    (``invalid_observations``). Векторы строятся так же, как в
+    ``ml.features.build_rows`` (inner join по времени, разность с предыдущим
+    согласованным наблюдением); пара с невалидным наблюдением исключается и
+    учитывается в ``vectors_with_invalid_observations`` — это следствие уже
+    посчитанной ошибки, а не вторая. ``invalid_vectors`` — отказы
+    ``build_vector``/``validate_vector`` для пар из валидных наблюдений.
+    ``missing`` — значение не собрано; собранное, но недопустимое значение
+    считается невалидным, а не пропуском. Нулём ничего не заменяется,
+    распределения — только по валидным векторам.
     """
-    rc = {row["ts"]: row["value"] for row in row_counts}
-    nr = {row["ts"]: row["value"] for row in null_rates}
+    series = {
+        "row_count": {row["ts"]: row["value"] for row in row_counts},
+        "null_rate": {row["ts"]: row["value"] for row in null_rates},
+    }
+    rc, nr = series["row_count"], series["null_rate"]
     instants = sorted(rc.keys() | nr.keys())
     aligned = sorted(rc.keys() & nr.keys())
     pairs = list(pairwise(aligned))
-    present = {
-        "row_count": sum(_finite(rc.get(ts)) for ts in instants),
-        "null_rate": sum(_finite(nr.get(ts)) for ts in instants),
-    }
-    computable = sum(
-        all(_finite(value) for value in (rc[a], nr[a], rc[b], nr[b])) for a, b in pairs
-    )
-    present["d_row_count"] = present["d_null_rate"] = computable
-    expected = {"row_count": len(instants), "null_rate": len(instants)}
-    expected["d_row_count"] = expected["d_null_rate"] = max(len(instants) - 1, 0)
+    rejected = {"not_a_finite_number": 0, "out_of_bounds": 0}
+    bad = set()
+    for name, values in series.items():
+        for ts, value in values.items():
+            error = _observation_error(name, value)
+            if error:
+                rejected[error] += 1
+                bad.add(ts)
+    missing = {name: len(instants) - len(values) for name, values in series.items()}
+    missing["d_row_count"] = missing["d_null_rate"] = max(len(instants) - 1, 0) - len(pairs)
 
-    valid, invalid = [], {"not_a_finite_number": 0, "out_of_bounds": 0}
+    valid, invalid, excluded = [], {"not_a_finite_number": 0, "out_of_bounds": 0}, 0
     for before, current in pairs:
+        if before in bad or current in bad:
+            excluded += 1
+            continue
         try:
             vector = build_vector(rc[current], nr[current], rc[before], nr[before])
         except ValueError:
@@ -127,26 +158,34 @@ def input_summary(row_counts, null_rates, *, now: datetime, max_age: timedelta) 
             continue
         valid.append((current, vector))
 
+    # Метки ставит сборщик по своим часам и усекает до секунды вниз, поэтому
+    # корректная метка не позже ``now`` тех же часов; допуск на рассинхронизацию
+    # не вводится. Наблюдение из будущего делает свежесть неустановимой.
+    future = sum(_instant(ts) > now for ts in instants)
     latest = valid[-1][0] if valid else None
     age = (now - _instant(latest)).total_seconds() if latest else None
-    fresh = age is not None and age <= max_age.total_seconds()
+    fresh = age is not None and not future and 0 <= age <= max_age.total_seconds()
     reasons = []
     if len(valid) < MIN_OBSERVATIONS:
         reasons.append("no_valid_vectors" if not valid else "insufficient_valid_vectors")
-    if any(invalid.values()):
+    if any(rejected.values()) or any(invalid.values()):
         reasons.append("invalid_values")
-    if valid and not fresh:
+    if future:
+        reasons.append("future_timestamps")
+    elif valid and not fresh:
         reasons.append("stale")
     return {
         "observation_instants": len(instants),
         "aligned_instants": len(aligned),
+        "invalid_observations": rejected,
         "vectors": len(pairs),
         "valid_vectors": len(valid),
+        "vectors_with_invalid_observations": excluded,
         "invalid_vectors": invalid,
         "min_valid_vectors": MIN_OBSERVATIONS,
         "features": {
             name: {
-                "missing": expected[name] - present[name],
+                "missing": missing[name],
                 "bounds": BOUNDS[name],
                 "distribution": _distribution([vector[i] for _, vector in valid]),
             }
@@ -156,6 +195,7 @@ def input_summary(row_counts, null_rates, *, now: datetime, max_age: timedelta) 
             "latest_valid_observation": latest,
             "age_seconds": round(age, 1) if age is not None else None,
             "max_age_seconds": max_age.total_seconds(),
+            "future_observations": future,
             "fresh": fresh,
         },
         "conclusive": not reasons,
