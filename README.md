@@ -45,6 +45,8 @@ pinned: false
 
 [Изолированный Compose-стенд: чистая сборка, seed, demo-инференс и перезапуск](docs/course/containers/README.md) · [Фактические проверки и ограничения](docs/course/containers/verification.md).
 
+[В10: стратегия деплоя и отката — схема, пороги, план отката, PDF на две страницы](docs/course/deployment/README.md).
+
 [В13: стратегия дрейфа и переобучения, PDF и проверяемый сценарий](docs/course/drift/README.md).
 
 Подготовка датасета для экспериментов: `python -m scripts.generate_ml_dataset --output data/course`.
