@@ -49,6 +49,8 @@ pinned: false
 
 [В13: стратегия дрейфа и переобучения, PDF и проверяемый сценарий](docs/course/drift/README.md).
 
+**[Итоговый отчёт по проекту](docs/course/final/REPORT.md)** · [PDF, 6 страниц A4](docs/course/final/REPORT.pdf) · [сборка и проверка](docs/course/final/README.md).
+
 Подготовка датасета для экспериментов: `python -m scripts.generate_ml_dataset --output data/course`.
 
 [Эксперименты MLflow: запуск, перенос результатов](docs/course/experiments/README.md) · [Таблица и выводы первой серии](docs/course/experiments/RESULTS.md): 9/9 инцидентов на test, FPR 13,27% — цель ≤10% пока не достигнута.

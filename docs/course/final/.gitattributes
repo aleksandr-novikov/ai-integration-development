@@ -1,0 +1,3 @@
+# ReportLab writes link annotations before the first binary stream; without this git
+# would treat the PDF as text in diffs and in `git diff --check`.
+*.pdf binary
